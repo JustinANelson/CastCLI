@@ -32,12 +32,12 @@ jobs:
           cache: gradle
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@4187e74d05793876e9989daffde9c3e66b4acd07 # v3
+        uses: github/codeql-action/init@adfda868f108ac4222129de456ea554034a27db7 # v4
         with:
           languages: java-kotlin
 
       - name: Build
-        run: ./gradlew classes testClasses --no-daemon
+        run: ./gradlew clean classes testClasses --rerun-tasks --no-build-cache --no-daemon
 
       - name: Analyze
-        uses: github/codeql-action/analyze@4187e74d05793876e9989daffde9c3e66b4acd07 # v3
+        uses: github/codeql-action/analyze@adfda868f108ac4222129de456ea554034a27db7 # v4
