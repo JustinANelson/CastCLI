@@ -1,6 +1,7 @@
 # CastCLI
 
-**CastCLI is an LLM orchestration harness, not a media-casting tool.** It is a Java 21 CLI/library that
+**CastCLI is an LLM orchestration harness** 
+It is a Java 21 CLI/library that
 routes coding and agent tasks between local Ollama models and frontier cloud models (OpenAI, Anthropic,
 Gemini), with dynamic tool selection, a cost-aware multi-agent commissioning pipeline, durable shared
 memory, and Model Context Protocol (MCP) client/server support — a secure local AI control plane for
