@@ -6,6 +6,10 @@ All notable changes to CastCLI are documented here. Format loosely follows
 
 ## [Unreleased]
 
+### Fixed
+- Release automation now uses GitHub's supported `macos-15-intel` runner, can rebuild native
+  bundles for an existing immutable tag, and avoids emulating the platform-independent Java build.
+
 ## [0.1.1] - 2026-07-26
 
 ### Added

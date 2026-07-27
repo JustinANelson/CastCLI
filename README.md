@@ -1,6 +1,11 @@
 # CastCLI
 
-A secure local AI control plane for developer tools—routing, repository memory, MCP delegation, approvals, and cost-aware multi-agent execution.
+**CastCLI is an LLM orchestration harness** 
+It is a Java 21 CLI/library that
+routes coding and agent tasks between local Ollama models and frontier cloud models (OpenAI, Anthropic,
+Gemini), with dynamic tool selection, a cost-aware multi-agent commissioning pipeline, durable shared
+memory, and Model Context Protocol (MCP) client/server support — a secure local AI control plane for
+developer tools, casting each task to whichever model tier (local vs. cloud) fits it best.
 
 # How it works
 
