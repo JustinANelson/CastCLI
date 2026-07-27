@@ -134,9 +134,15 @@ jobs:
 
       - name: Zip app image (Unix)
         if: runner.os != 'Windows'
+        # jpackage's app-image output is a plain "cast-cli" directory on Linux, but a
+        # "cast-cli.app" bundle on macOS.
         run: |
           cd build/jpackage
-          zip -r ../../${{ matrix.asset }}.zip cast-cli
+          if [ -d "cast-cli.app" ]; then
+            zip -r ../../${{ matrix.asset }}.zip cast-cli.app
+          else
+            zip -r ../../${{ matrix.asset }}.zip cast-cli
+          fi
 
       - name: Zip app image (Windows)
         if: runner.os == 'Windows'
