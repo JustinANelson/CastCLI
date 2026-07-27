@@ -63,7 +63,7 @@ class WorkspaceToolsSecurityTest {
     void rejectsSymlinkEscapingWorkspace() throws IOException {
         Path outsideDir = tempDir.resolve("outside_dir");
         Files.createDirectories(outsideDir);
-        Path secretFile = outsideDir.resolve("secret.txt");
+        Path secretFile = outsideDir.resolve("outside.txt");
         Files.writeString(secretFile, "top secret");
 
         Path symlinkInWorkspace = workspaceRoot.resolve("symlink_out");
@@ -74,11 +74,11 @@ class WorkspaceToolsSecurityTest {
             return;
         }
 
-        assertThatThrownBy(() -> tools.readWorkspaceFile("symlink_out/secret.txt"))
+        assertThatThrownBy(() -> tools.readWorkspaceFile("symlink_out/outside.txt"))
                 .isInstanceOf(SecurityException.class)
                 .hasMessageContaining("escapes workspace via symlink");
         assertThat(tools.listWorkspaceFiles("**/*", 100))
-                .doesNotContain(Path.of("symlink_out", "secret.txt").toString());
+                .doesNotContain(Path.of("symlink_out", "outside.txt").toString());
         assertThat(tools.searchWorkspace("top secret", 100)).isEmpty();
     }
 
