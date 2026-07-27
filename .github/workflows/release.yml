@@ -81,6 +81,7 @@ jobs:
   native-bundles:
     needs: release
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest

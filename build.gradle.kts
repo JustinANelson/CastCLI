@@ -132,11 +132,23 @@ tasks.register<Exec>("jpackageImage") {
         outDir.mkdirs()
     }
 
+    // jpackage's --app-version only sets the macOS .app bundle's Info.plist metadata
+    // (CFBundleShortVersionString) -- it is unrelated to the jar's Implementation-Version that
+    // `cast-cli --version` actually reports. Apple's bundler rejects a version whose first
+    // component is 0 ("The first number in an app-version cannot be zero or negative"), which
+    // pre-1.0 releases like 0.1.0 always have, so bump a zero leading component to 1 here only.
+    val rawVersion = project.version.toString().substringBefore("-SNAPSHOT")
+    val appVersionParts = rawVersion.split(".").toMutableList()
+    if (appVersionParts.isNotEmpty() && (appVersionParts[0].toIntOrNull() ?: 0) < 1) {
+        appVersionParts[0] = "1"
+    }
+    val jpackageAppVersion = appVersionParts.joinToString(".")
+
     commandLine(
         "jpackage",
         "--type", "app-image",
         "--name", "cast-cli",
-        "--app-version", project.version.toString().substringBefore("-SNAPSHOT"),
+        "--app-version", jpackageAppVersion,
         "--input", installLibDir.get().asFile.absolutePath,
         "--main-jar", mainJarName.get(),
         "--main-class", "dev.justnels.castcli.CastCli",
