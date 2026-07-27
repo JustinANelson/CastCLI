@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag whose native bundles should be rebuilt
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -12,16 +18,18 @@ permissions:
   attestations: write
 
 env:
-  # Strips the leading "v" from a tag like v1.2.0 so it's a valid jpackage/semver version.
-  CASTCLI_VERSION: ${{ github.ref_name }}
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
 
 jobs:
   release:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Set up JDK 21
         uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5
@@ -34,7 +42,7 @@ jobs:
         run: chmod +x gradlew
 
       - name: Strip leading v from tag for version property
-        run: echo "CASTCLI_VERSION=${CASTCLI_VERSION#v}" >> "$GITHUB_ENV"
+        run: echo "CASTCLI_VERSION=${RELEASE_TAG#v}" >> "$GITHUB_ENV"
 
       - name: Run tests
         run: ./gradlew test
@@ -100,6 +108,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
+          tag_name: ${{ env.RELEASE_TAG }}
           files: |
             build/distributions/*.zip
             build/distributions/*.tar
@@ -110,6 +119,7 @@ jobs:
 
   native-bundles:
     needs: release
+    if: ${{ always() && (needs.release.result == 'success' || github.event_name == 'workflow_dispatch') }}
     strategy:
       fail-fast: false
       matrix:
@@ -120,13 +130,15 @@ jobs:
             asset: cast-cli-windows-x64
           - os: macos-latest
             asset: cast-cli-macos-arm64
-          - os: macos-13
+          - os: macos-15-intel
             asset: cast-cli-macos-x64
     runs-on: ${{ matrix.os }}
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Set up JDK 21
         uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5
@@ -141,7 +153,7 @@ jobs:
 
       - name: Strip leading v from tag for version property
         shell: bash
-        run: echo "CASTCLI_VERSION=${CASTCLI_VERSION#v}" >> "$GITHUB_ENV"
+        run: echo "CASTCLI_VERSION=${RELEASE_TAG#v}" >> "$GITHUB_ENV"
 
       # Each platform ships a distinct app image, so verify the suite passes here too --
       # the ubuntu-only run in the `release` job doesn't cover Windows/macOS-specific behavior.
@@ -200,6 +212,7 @@ jobs:
       - name: Upload bundle to release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
+          tag_name: ${{ env.RELEASE_TAG }}
           files: |
             ${{ matrix.asset }}.zip
             ${{ matrix.asset }}.zip.sha256

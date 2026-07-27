@@ -1,6 +1,7 @@
 # Multi-stage Dockerfile for CastCLI
 # Stage 1: Build stage
-FROM eclipse-temurin:21-jdk-alpine AS builder
+# Java bytecode is platform-independent; build it on the native runner even when Buildx targets arm64.
+FROM --platform=$BUILDPLATFORM eclipse-temurin:21-jdk-alpine AS builder
 
 WORKDIR /app
 
