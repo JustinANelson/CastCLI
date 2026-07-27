@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "cast-cli": {
+      "command": "C:\\Users\\justnels\\Projects\\CastCLI\\build\\install\\cast-cli\\bin\\cast-cli.bat",
+      "args": ["--config", "C:\\Users\\justnels\\Projects\\CastCLI\\config\\harness.local.json", "mcp-serve"]
+    }
+  }
+}

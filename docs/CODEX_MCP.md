@@ -1,0 +1,56 @@
+# Verifying Codex delegation to CastCLI
+
+## Configure
+
+1. Enable mcpAudit in the local harness config. It defaults to enabled and writes
+   .cast/metrics/mcp-usage.jsonl, which is covered by the repository's .gitignore.
+2. Run ./gradlew.bat installDist.
+3. Copy config/codex-mcp.example.toml into the applicable Codex config.toml, replace its absolute paths,
+   restart Codex, and run /mcp.
+4. Confirm cast-cli is connected and exposes `ask_local` plus the structured delegation tools.
+
+The checked-in AGENTS.md asks Codex to prefer the most specific structured tool, then `ask_local`, for
+bounded, read-only, low-risk work while excluding security, credentials, destructive work, production
+operations, and final verification.
+
+## Verify utilization
+
+Each MCP tool result has an invocation ID and audit-file location in its MCP _meta. A delegated result also
+ends with a compact receipt containing provider, model, local token count, estimated cost, and trace ID.
+The durable audit includes successful and failed calls even when OpenTelemetry export is disabled.
+
+After asking Codex to perform suitable low-risk work, run:
+
+    ./gradlew.bat run --args="--config config/harness.local.json mcp-usage --since-hours 24 --fail-if-unused"
+
+The report shows total MCP calls, delegation attempts and successes, `ask_local` calls, local input/output
+tokens, latency, estimated local cost, calls by tool/provider, and an estimated frontier-equivalent cost when the config has
+an enabled FRONTIER_CLOUD reference provider.
+
+For automation:
+
+    ./gradlew.bat run --args="--config config/harness.local.json mcp-usage --since-hours 1 --json --fail-if-unused"
+
+## Compare efficiency
+
+Enabling an MCP server does not prove Codex saves tokens: Codex still spends tokens selecting the tool and
+reading its result. Measure equivalent tasks in fresh sessions with the same model, reasoning effort, prompt,
+and repository state:
+
+1. Baseline session: tell Codex not to use CastCLI and record the session/turn token count from /status or
+   Codex OpenTelemetry.
+2. Delegated session: allow the policy in AGENTS.md, confirm an ask_local receipt, and record Codex tokens.
+3. Pass both measurements to the report:
+
+       ./gradlew.bat run --args="--config config/harness.local.json mcp-usage --since-hours 1 --baseline-codex-tokens 12000 --delegated-codex-tokens 7800"
+
+The report separates measured Codex token savings from local-model tokens and also shows combined processing
+tokens. Repeat at least three times and compare medians; validate answer quality alongside token and latency
+changes.
+
+Codex documents /mcp as the connected-server/tool status surface and /status as the session token-usage
+surface. For higher-fidelity experiments, Codex OpenTelemetry emits request, response-completion token, tool
+decision, and tool-result events:
+
+- https://learn.chatgpt.com/docs/extend/mcp
+- https://learn.chatgpt.com/docs/config-file/config-advanced

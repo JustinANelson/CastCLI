@@ -1,0 +1,60 @@
+{
+  "providers": [
+    {
+      "id": "coder-local-12gb-small",
+      "tier": "SMALL_LOCAL",
+      "baseUrl": "${OLLAMA_BASE_URL:http://localhost:11434/v1/}",
+      "modelName": "qwen2.5-coder:7b",
+      "apiKeyEnv": null,
+      "temperature": 0.1,
+      "timeoutSeconds": 120,
+      "toolsEnabled": true,
+      "maxToolsSupported": 4,
+      "enabled": true
+    },
+    {
+      "id": "labor-local-12gb-large",
+      "tier": "LARGE_LOCAL",
+      "baseUrl": "${OLLAMA_BASE_URL:http://localhost:11434/v1/}",
+      "modelName": "qwen2.5-coder:14b",
+      "apiKeyEnv": null,
+      "temperature": 0.1,
+      "timeoutSeconds": 300,
+      "toolsEnabled": true,
+      "maxToolsSupported": 5,
+      "enabled": true
+    },
+    {
+      "id": "pm-frontier-openai",
+      "tier": "FRONTIER_CLOUD",
+      "baseUrl": "https://api.openai.com/v1/",
+      "modelName": "gpt-4o",
+      "apiKeyEnv": "OPENAI_API_KEY",
+      "temperature": 0.2,
+      "timeoutSeconds": 300,
+      "toolsEnabled": true,
+      "maxToolsSupported": 10,
+      "enabled": true
+    }
+  ],
+  "routing": {
+    "quickPromptMaxChars": 240,
+    "preferLocal": true,
+    "maxContextChars": 12000,
+    "maxReworkIterations": 1
+  },
+  "tools": {
+    "workspaceRoot": ".",
+    "maxFileBytes": 262144,
+    "jshellEnabled": false,
+    "allowWrites": false,
+    "allowShellExec": false,
+    "requireApproval": true
+  },
+  "reliability": {
+    "maxCostUsdPerTask": 1.0,
+    "maxCumulativeCostUsd": 20.0,
+    "maxRequestsPerMinute": 30
+  }
+}
+

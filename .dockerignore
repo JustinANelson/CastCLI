@@ -1,0 +1,10 @@
+.git
+.gradle
+.harness
+.vscode
+.cast
+build
+out
+*.log
+*.tmp
+config/harness.local.json

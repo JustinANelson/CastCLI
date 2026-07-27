@@ -1,0 +1,29 @@
+{
+  "name": "developer-routing-smoke",
+  "cases": [
+    {
+      "id": "quick-summary",
+      "prompt": "Summarize this paragraph",
+      "workload": "QUICK",
+      "expectedTier": "SMALL_LOCAL",
+      "cloudAllowed": false,
+      "requiredTools": []
+    },
+    {
+      "id": "repository-code",
+      "prompt": "Find and refactor the repository authentication code",
+      "workload": "CODE",
+      "expectedTier": "LARGE_LOCAL",
+      "cloudAllowed": false,
+      "requiredTools": ["WorkspaceTools"]
+    },
+    {
+      "id": "private-analysis",
+      "prompt": "Analyze this confidential customer data locally and do not upload it",
+      "workload": "REASONING",
+      "expectedTier": "LARGE_LOCAL",
+      "cloudAllowed": false,
+      "requiredTools": []
+    }
+  ]
+}

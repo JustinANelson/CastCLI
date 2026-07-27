@@ -1,0 +1,123 @@
+{
+  "providers": [
+    {
+      "id": "small-local",
+      "tier": "SMALL_LOCAL",
+      "baseUrl": "${OLLAMA_BASE_URL:http://localhost:11434/v1/}",
+      "modelName": "qwen3:4b",
+      "apiKeyEnv": null,
+      "temperature": 0.1,
+      "timeoutSeconds": 90,
+      "toolsEnabled": false,
+      "maxToolsSupported": 1,
+      "enabled": true,
+      "costPerMillionInputTokens": 0.0,
+      "costPerMillionOutputTokens": 0.0
+    },
+    {
+      "id": "large-local",
+      "tier": "LARGE_LOCAL",
+      "baseUrl": "${OLLAMA_BASE_URL:http://localhost:11434/v1/}",
+      "modelName": "qwen3:30b",
+      "apiKeyEnv": null,
+      "temperature": 0.1,
+      "timeoutSeconds": 300,
+      "toolsEnabled": true,
+      "maxToolsSupported": 5,
+      "enabled": true,
+      "costPerMillionInputTokens": 0.0,
+      "costPerMillionOutputTokens": 0.0
+    },
+    {
+      "id": "frontier-cloud",
+      "tier": "FRONTIER_CLOUD",
+      "baseUrl": "https://api.openai.com/v1/",
+      "modelName": "YOUR_FRONTIER_MODEL",
+      "apiKeyEnv": "OPENAI_API_KEY",
+      "temperature": 0.1,
+      "timeoutSeconds": 300,
+      "toolsEnabled": true,
+      "maxToolsSupported": 10,
+      "enabled": false,
+      "costPerMillionInputTokens": 3.0,
+      "costPerMillionOutputTokens": 15.0
+    }
+  ],
+  "routing": {
+    "quickPromptMaxChars": 240,
+    "preferLocal": true,
+    "maxContextChars": 12000,
+    "maxReworkIterations": 1
+  },
+  "tools": {
+    "workspaceRoot": ".",
+    "maxFileBytes": 262144,
+    "jshellEnabled": false,
+    "allowWrites": false,
+    "allowShellExec": false,
+    "requireApproval": true
+  },
+  "mcpServers": [
+    {
+      "name": "example-external-tool-server",
+      "command": "npx",
+      "args": ["-y", "@example/mcp-server"],
+      "environment": {},
+      "enabled": false
+    }
+  ],
+  "embeddings": {
+    "enabled": false,
+    "baseUrl": "${OLLAMA_BASE_URL:http://localhost:11434/v1/}",
+    "modelName": "nomic-embed-text",
+    "apiKeyEnv": null,
+    "timeoutSeconds": 60,
+    "chunkLines": 60,
+    "chunkOverlapLines": 10,
+    "maxFileBytes": 300000,
+    "indexPath": ".cast/index/workspace-embeddings.json",
+    "costPerMillionInputTokens": 0.0
+  },
+  "memory": {
+    "enabled": true,
+    "databasePath": ".cast/memory/memory.db",
+    "defaultNamespace": "project",
+    "maxContextChars": 4000,
+    "maxResults": 8,
+    "retentionDays": 0
+  },
+  "reliability": {
+    "maxAttemptsPerProvider": 2,
+    "initialBackoffMillis": 100,
+    "maxBackoffMillis": 2000,
+    "failureThreshold": 3,
+    "cooldownSeconds": 30,
+    "requestDeadlineSeconds": 300,
+    "maxConcurrentRequests": 16,
+    "fallbackOrder": {},
+    "maxCostUsdPerTask": 1.0,
+    "maxCumulativeCostUsd": 20.0,
+    "maxRequestsPerMinute": 30
+  },
+  "observability": {
+    "enabled": false,
+    "serviceName": "cast-cli",
+    "otlpEnabled": false,
+    "otlpEndpoint": "http://localhost:4317",
+    "jsonlPath": ".cast/traces/spans.jsonl",
+    "exportIntervalSeconds": 10,
+    "sampleProbability": 1.0,
+    "capturePrompts": false,
+    "metricsEnabled": true,
+    "otlpHeaders": {},
+    "resourceAttributes": {
+      "deployment.environment.name": "development"
+    }
+  },
+  "mcpAudit": {
+    "enabled": true,
+    "path": ".cast/metrics/mcp-usage.jsonl",
+    "includeResponseMetadata": true
+  }
+}
+

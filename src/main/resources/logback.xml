@@ -1,0 +1,21 @@
+<configuration>
+    <!--
+      Target is pinned to System.err, not the ConsoleAppender default of System.out: mcp-serve
+      writes JSON-RPC protocol frames to stdout (see McpStdioServer), so any log line landing on
+      stdout would corrupt that stream. Keep all logging on stderr regardless of command.
+    -->
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <target>System.err</target>
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} [trace_id=%X{trace_id:-none}] - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+    </root>
+
+    <!-- Suppress chatty internal logs -->
+    <logger name="org.reflections" level="WARN"/>
+    <logger name="dev.langchain4j" level="INFO"/>
+</configuration>

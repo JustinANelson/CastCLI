@@ -1,0 +1,34 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: cast-cli-ollama
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  cast-cli:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: cast-cli:latest
+    container_name: cast-cli-mcp
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      - OLLAMA_BASE_URL=http://ollama:11434/v1/
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+    volumes:
+      - ./config:/app/config:ro
+      - cast_data:/app/.cast
+    command: ["mcp-serve"]
+    restart: unless-stopped
+
+volumes:
+  ollama_data:
+  cast_data:

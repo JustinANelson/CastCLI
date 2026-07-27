@@ -1,0 +1,40 @@
+# Gradle and Java build output
+.gradle/
+build/
+bin/
+out/
+*.class
+
+# Project runtime state
+.harness/
+.cast/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+config/harness.local.json
+
+# IDE and editor metadata
+.idea/
+.vscode/
+*.iml
+.classpath
+.project
+.settings/
+.vs/
+*.swp
+*.swo
+*~
+
+# Logs, crash reports, and temporary files
+*.log
+*.tmp
+*.bak
+hs_err_pid*
+replay_pid*
+
+# Operating-system metadata
+.DS_Store
+Thumbs.db
+Desktop.ini

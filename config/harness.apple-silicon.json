@@ -1,0 +1,60 @@
+{
+  "providers": [
+    {
+      "id": "coder-local-mac-small",
+      "tier": "SMALL_LOCAL",
+      "baseUrl": "${OLLAMA_BASE_URL:http://localhost:11434/v1/}",
+      "modelName": "qwen2.5-coder:14b",
+      "apiKeyEnv": null,
+      "temperature": 0.1,
+      "timeoutSeconds": 120,
+      "toolsEnabled": true,
+      "maxToolsSupported": 6,
+      "enabled": true
+    },
+    {
+      "id": "labor-local-mac-large",
+      "tier": "LARGE_LOCAL",
+      "baseUrl": "${OLLAMA_BASE_URL:http://localhost:11434/v1/}",
+      "modelName": "qwen2.5-coder:32b",
+      "apiKeyEnv": null,
+      "temperature": 0.1,
+      "timeoutSeconds": 300,
+      "toolsEnabled": true,
+      "maxToolsSupported": 10,
+      "enabled": true
+    },
+    {
+      "id": "pm-frontier-anthropic",
+      "tier": "FRONTIER_CLOUD",
+      "baseUrl": "https://api.anthropic.com/v1/",
+      "modelName": "claude-3-7-sonnet-20250219",
+      "apiKeyEnv": "ANTHROPIC_API_KEY",
+      "temperature": 0.2,
+      "timeoutSeconds": 300,
+      "toolsEnabled": true,
+      "maxToolsSupported": 10,
+      "enabled": true
+    }
+  ],
+  "routing": {
+    "quickPromptMaxChars": 240,
+    "preferLocal": true,
+    "maxContextChars": 12000,
+    "maxReworkIterations": 1
+  },
+  "tools": {
+    "workspaceRoot": ".",
+    "maxFileBytes": 262144,
+    "jshellEnabled": false,
+    "allowWrites": false,
+    "allowShellExec": false,
+    "requireApproval": true
+  },
+  "reliability": {
+    "maxCostUsdPerTask": 1.0,
+    "maxCumulativeCostUsd": 20.0,
+    "maxRequestsPerMinute": 30
+  }
+}
+

@@ -1,0 +1,38 @@
+groups:
+  - name: cast_cli_alerts
+    rules:
+      - alert: LLMBudgetExhaustionRapid
+        expr: sum(rate(cast_cli_tokens_total[5m])) > 100000
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "CastCLI rapid token budget consumption"
+          description: "LLM token consumption rate is exceeding 100,000 tokens/5m over the last 2 minutes."
+
+      - alert: ModelCircuitBreakerTripped
+        expr: cast_cli_circuit_breaker_open_state == 1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Model provider circuit breaker tripped"
+          description: "Circuit breaker for provider {{ $labels.provider }} is open due to high failure rate."
+
+      - alert: HighModelRequestLatency
+        expr: histogram_quantile(0.95, sum(rate(cast_cli_request_duration_seconds_bucket[5m])) by (le, provider)) > 30
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High p95 model request latency"
+          description: "95th percentile request latency for provider {{ $labels.provider }} exceeds 30 seconds."
+
+      - alert: DoctorCheckFailures
+        expr: cast_cli_doctor_status_error_count > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "CastCLI diagnostic doctor errors detected"
+          description: "Automated environment doctor check reported {{ $value }} critical system errors."
