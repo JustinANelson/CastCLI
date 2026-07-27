@@ -43,7 +43,7 @@ USER castcli
 ENV PATH="/app/bin:${PATH}"
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD ["cast-cli", "doctor", "--json"] || exit 1
+  CMD ["cast-cli", "doctor", "--json"]
 
 ENTRYPOINT ["cast-cli"]
 CMD ["mcp-serve"]

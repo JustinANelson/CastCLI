@@ -1,6 +1,7 @@
 package dev.justnels.castcli.observability;
 
 import dev.justnels.castcli.config.ObservabilityConfig;
+import dev.justnels.castcli.doctor.BuildInfo;
 import io.opentelemetry.api.OpenTelemetry;
 import io.opentelemetry.api.common.Attributes;
 import io.opentelemetry.api.common.AttributesBuilder;
@@ -65,7 +66,7 @@ public final class CastTelemetry implements AutoCloseable {
         this.config = config;
         this.openTelemetry = openTelemetry;
         this.sdk = sdk;
-        this.tracer = openTelemetry.getTracer("dev.justnels.castcli", "0.1.0");
+        this.tracer = openTelemetry.getTracer("dev.justnels.castcli", BuildInfo.version());
         var meter = openTelemetry.getMeter("dev.justnels.castcli");
         this.requests = meter.counterBuilder("castcli.requests").setDescription("CastCLI requests").build();
         this.failures = meter.counterBuilder("castcli.failures").setDescription("Failed operations").build();
@@ -172,7 +173,7 @@ public final class CastTelemetry implements AutoCloseable {
 
     private static CastTelemetry create(ObservabilityConfig config, Path workspace) {
         AttributesBuilder resourceAttributes = Attributes.builder().put("service.name", config.serviceName())
-                .put("service.version", "0.1.0");
+                .put("service.version", BuildInfo.version());
         config.resourceAttributes().forEach(resourceAttributes::put);
         Resource resource = Resource.getDefault().merge(Resource.create(resourceAttributes.build()));
 

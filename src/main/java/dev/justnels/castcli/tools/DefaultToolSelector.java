@@ -28,7 +28,7 @@ public final class DefaultToolSelector implements ToolSelector {
     public List<Object> selectTools(TaskRequest task, ToolConfig config, ApprovalGate approvalGate) {
         List<Object> tools = new ArrayList<>();
         String normalized = task.prompt().toLowerCase(Locale.ROOT);
-        ApprovalGate gate = approvalGate == null ? AutoApprovalGate.INSTANCE : approvalGate;
+        ApprovalGate gate = approvalGate == null ? DenyApprovalGate.INSTANCE : approvalGate;
 
         boolean needsSystem = containsAny(normalized, SYSTEM_MARKERS);
         boolean needsWorkspace = containsAny(normalized, WORKSPACE_MARKERS) || task.workload() == Workload.CODE;

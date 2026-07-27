@@ -24,10 +24,17 @@ CastCLI is designed to run under an operator who controls its configuration file
 mode, approves each write/exec tool call interactively. Key boundaries:
 
 - **Workspace confinement**: `WorkspaceTools` normalizes every path and rejects anything outside
-  `tools.workspaceRoot`. A bug that lets a path escape this boundary is a high-severity report.
+  `tools.workspaceRoot`. It also unconditionally excludes `.git`, `.cast`, local harness config,
+  environment files, private keys, and common credential filenames from reads, listings, searches,
+  and writes. A bug that lets a path escape either boundary is a high-severity report.
 - **Writes and shell execution are off by default** (`tools.allowWrites`, `tools.allowShellExec`)
   and are double-gated by an `ApprovalGate` even when enabled. `ProcessExecTool` only runs a fixed
-  command allow-list, never an arbitrary shell string; a bypass of that allow-list is high severity.
+  command allow-list, never an arbitrary shell string, and passes only a minimal allow-listed
+  environment to children. Library callers that omit an approval gate fail closed. A bypass of
+  these controls is high severity.
+- **Diagnostics**: the HTTP health server binds to loopback by default. `/livez` reports only static
+  liveness; `/health` and `/readyz` include operational details and should not be exposed to an
+  untrusted network without an authenticating reverse proxy.
 - **JShell is disabled by default** because it executes arbitrary JVM code with no OS-level
   sandbox. Do not report "JShell can run arbitrary code" as a vulnerability on its own — that is
   documented, opt-in behavior (see [Safety](README.md#safety)). Do report anything that enables it,
@@ -45,5 +52,5 @@ since that is an explicit, documented opt-in.
 
 ## Supported Versions
 
-CastCLI is pre-1.0. Security fixes land on `main`; there is no separate long-term-support branch
-yet. Please test against the latest `main` before reporting.
+CastCLI is pre-1.0. Version 0.1.1 and the latest `main` receive security fixes; there is no separate
+long-term-support branch yet. Please test against the latest supported build before reporting.

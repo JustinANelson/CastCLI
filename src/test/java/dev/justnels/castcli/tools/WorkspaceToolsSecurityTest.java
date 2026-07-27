@@ -77,5 +77,30 @@ class WorkspaceToolsSecurityTest {
         assertThatThrownBy(() -> tools.readWorkspaceFile("symlink_out/secret.txt"))
                 .isInstanceOf(SecurityException.class)
                 .hasMessageContaining("escapes workspace via symlink");
+        assertThat(tools.listWorkspaceFiles("**/*", 100))
+                .doesNotContain(Path.of("symlink_out", "secret.txt").toString());
+        assertThat(tools.searchWorkspace("top secret", 100)).isEmpty();
+    }
+
+    @Test
+    void deniesAndDoesNotEnumerateSensitiveWorkspaceState() throws IOException {
+        Files.writeString(workspaceRoot.resolve(".env"), "OPENAI_API_KEY=secret");
+        Files.writeString(workspaceRoot.resolve("PROD-SECRET.TXT"), "uppercase secret");
+        Files.createDirectories(workspaceRoot.resolve(".git"));
+        Files.writeString(workspaceRoot.resolve(".git/config"), "credential=secret");
+        Files.createDirectories(workspaceRoot.resolve(".cast"));
+        Files.writeString(workspaceRoot.resolve(".cast/audit.jsonl"), "sensitive context");
+        Files.writeString(workspaceRoot.resolve("visible.txt"), "safe");
+
+        assertThatThrownBy(() -> tools.readWorkspaceFile(".env"))
+                .isInstanceOf(SecurityException.class)
+                .hasMessageContaining("sensitive workspace path");
+        assertThat(tools.listWorkspaceFiles("**/*", 100))
+                .contains("visible.txt")
+                .doesNotContain(".env", Path.of(".git", "config").toString(),
+                        Path.of(".cast", "audit.jsonl").toString());
+        assertThat(tools.searchWorkspace("secret", 100)).isEmpty();
+        assertThatThrownBy(() -> tools.readWorkspaceFile("PROD-SECRET.TXT"))
+                .isInstanceOf(SecurityException.class);
     }
 }

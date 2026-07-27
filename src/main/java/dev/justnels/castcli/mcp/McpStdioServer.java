@@ -8,6 +8,7 @@ import dev.justnels.castcli.config.HarnessConfig;
 import dev.justnels.castcli.config.ModelTier;
 import dev.justnels.castcli.config.ProviderConfig;
 import dev.justnels.castcli.config.ToolConfig;
+import dev.justnels.castcli.doctor.BuildInfo;
 import dev.justnels.castcli.index.IndexerIgnoreConfig;
 import dev.justnels.castcli.index.WorkspaceEmbeddingIndex;
 import dev.justnels.castcli.model.EmbeddingModelFactory;
@@ -36,7 +37,7 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * A minimal MCP server (protocol version 2024-11-05) speaking newline-delimited JSON-RPC 2.0 over
+ * A minimal MCP server speaking newline-delimited JSON-RPC 2.0 over
  * stdio, implemented directly against the spec rather than a third-party server SDK. It exposes this
  * harness's cheap local/small tiers as MCP tools so a frontier agent such as Claude Code can delegate
  * routine, low-stakes subtasks down to them instead of spending frontier tokens on everything.
@@ -46,7 +47,9 @@ import java.util.UUID;
  */
 public final class McpStdioServer {
     private static final Logger log = LoggerFactory.getLogger(McpStdioServer.class);
-    private static final String PROTOCOL_VERSION = "2024-11-05";
+    private static final String PROTOCOL_VERSION = "2025-11-25";
+    private static final List<String> SUPPORTED_PROTOCOL_VERSIONS = List.of(
+            "2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05");
 
     private final ObjectMapper mapper = new ObjectMapper();
     private final Map<String, McpTool> tools = new LinkedHashMap<>();
@@ -56,6 +59,8 @@ public final class McpStdioServer {
     private final McpUsageStore usageStore;
     private final boolean auditEnabled;
     private final boolean includeResponseMetadata;
+    private boolean initializeResponded;
+    private boolean initialized;
 
     public McpStdioServer(HarnessConfig config, InputStream stdin, PrintStream stdout) {
         this(config, stdin, stdout, null);
@@ -97,14 +102,24 @@ public final class McpStdioServer {
         try {
             request = mapper.readTree(line);
         } catch (Exception e) {
-            log.warn("Ignoring malformed JSON-RPC line: {}", e.getMessage());
+            log.warn("Malformed JSON-RPC line: {}", e.getMessage());
+            sendError(mapper.nullNode(), -32700, "Parse error");
             return;
         }
 
         JsonNode idNode = request.get("id");
         String method = request.path("method").asText("");
 
+        if (!request.isObject() || !"2.0".equals(request.path("jsonrpc").asText()) || method.isBlank()) {
+            if (idNode != null) {
+                sendError(idNode, -32600, "Invalid JSON-RPC request");
+            }
+            return;
+        }
         if (method.startsWith("notifications/")) {
+            if ("notifications/initialized".equals(method) && initializeResponded) {
+                initialized = true;
+            }
             return; // no response expected
         }
 
@@ -133,23 +148,43 @@ public final class McpStdioServer {
 
     private ObjectNode dispatch(String method, JsonNode params) throws Exception {
         return switch (method) {
-            case "initialize" -> initializeResult();
+            case "initialize" -> initializeResult(params);
             case "ping" -> mapper.createObjectNode();
-            case "tools/list" -> toolsListResult();
-            case "tools/call" -> toolsCallResult(params);
+            case "tools/list" -> {
+                requireInitialized();
+                yield toolsListResult();
+            }
+            case "tools/call" -> {
+                requireInitialized();
+                yield toolsCallResult(params);
+            }
             default -> throw new McpProtocolException(-32601, "Method not found: " + method);
         };
     }
 
-    private ObjectNode initializeResult() {
+    private ObjectNode initializeResult(JsonNode params) {
+        if (initializeResponded) {
+            throw new McpProtocolException(-32600, "Server is already initialized");
+        }
+        String requested = params == null ? "" : params.path("protocolVersion").asText("");
+        String negotiated = SUPPORTED_PROTOCOL_VERSIONS.contains(requested) ? requested : PROTOCOL_VERSION;
+        initializeResponded = true;
         ObjectNode result = mapper.createObjectNode();
-        result.put("protocolVersion", PROTOCOL_VERSION);
+        result.put("protocolVersion", negotiated);
         ObjectNode capabilities = result.putObject("capabilities");
-        capabilities.putObject("tools");
+        capabilities.putObject("tools").put("listChanged", false);
         ObjectNode serverInfo = result.putObject("serverInfo");
-        serverInfo.put("name", "java-local-llm-harness");
-        serverInfo.put("version", "0.1.0");
+        serverInfo.put("name", "cast-cli");
+        serverInfo.put("title", "CastCLI Local Delegation Server");
+        serverInfo.put("version", BuildInfo.version());
         return result;
+    }
+
+    private void requireInitialized() {
+        if (!initialized) {
+            throw new McpProtocolException(-32002,
+                    "MCP session is not initialized; send initialize then notifications/initialized");
+        }
     }
 
     private ObjectNode toolsListResult() {
@@ -479,4 +514,3 @@ public final class McpStdioServer {
         }
     }
 }
-

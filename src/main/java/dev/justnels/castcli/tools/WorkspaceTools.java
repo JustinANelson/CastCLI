@@ -9,24 +9,42 @@ import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.PathMatcher;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.stream.Stream;
 
 public final class WorkspaceTools {
+    private static final List<String> MANDATORY_DENY_GLOBS = List.of(
+            ".env", ".env.*", "**/.env", "**/.env.*", "**/*.env",
+            ".git/**", "**/.git/**", ".cast/**", "**/.cast/**",
+            "config/harness.local.json", "**/harness.local.json",
+            "**/credentials.json", "**/credentials*.json", "**/*-credentials.*", "**/*_credentials.*",
+            "**/secret.*", "**/secrets.*", "**/*-secret.*", "**/*_secret.*",
+            "**/password.*", "**/passwords.*", "**/*-password.*", "**/*_password.*",
+            "**/token.*", "**/tokens.*", "**/*-token.*", "**/*_token.*",
+            "**/*.pem", "**/*.key", "**/*.p12", "**/*.pfx", "**/*.jks", "**/*.keystore",
+            ".npmrc", "**/.npmrc", ".pypirc", "**/.pypirc", ".netrc", "**/.netrc"
+    );
+
     private final Path root;
     private final long maxFileBytes;
     private final boolean writesAllowed;
     private final ApprovalGate approvalGate;
+    private final List<PathMatcher> denyMatchers;
+    private final Path realRoot;
 
     public WorkspaceTools(Path root, long maxFileBytes) {
-        this(root, maxFileBytes, false, AutoApprovalGate.INSTANCE);
+        this(root, maxFileBytes, false, DenyApprovalGate.INSTANCE);
     }
 
     public WorkspaceTools(Path root, long maxFileBytes, boolean writesAllowed, ApprovalGate approvalGate) {
         this.root = root.toAbsolutePath().normalize();
         this.maxFileBytes = maxFileBytes;
         this.writesAllowed = writesAllowed;
-        this.approvalGate = approvalGate == null ? AutoApprovalGate.INSTANCE : approvalGate;
+        this.approvalGate = approvalGate == null ? DenyApprovalGate.INSTANCE : approvalGate;
+        this.denyMatchers = buildMatchers(MANDATORY_DENY_GLOBS);
+        this.realRoot = realPathOrNormalized(this.root);
     }
 
     @Tool("Reads a UTF-8 text file inside the configured workspace")
@@ -48,10 +66,14 @@ public final class WorkspaceTools {
             @P("maximum number of results, from 1 to 500") int maxResults) throws IOException {
         int limit = checkedLimit(maxResults);
         PathMatcher matcher = FileSystems.getDefault().getPathMatcher("glob:" + glob);
+        PathMatcher rootMatcher = glob.startsWith("**/")
+                ? FileSystems.getDefault().getPathMatcher("glob:" + glob.substring(3))
+                : matcher;
         try (Stream<Path> paths = Files.walk(root)) {
             return paths.filter(Files::isRegularFile)
+                    .filter(this::isAllowed)
                     .map(root::relativize)
-                    .filter(matcher::matches)
+                    .filter(path -> matcher.matches(path) || rootMatcher.matches(path))
                     .limit(limit)
                     .map(Path::toString)
                     .toList();
@@ -68,6 +90,7 @@ public final class WorkspaceTools {
         int limit = checkedLimit(maxResults);
         try (Stream<Path> paths = Files.walk(root)) {
             return paths.filter(Files::isRegularFile)
+                    .filter(this::isAllowed)
                     .filter(path -> isSmallEnough(path))
                     .flatMap(path -> matches(path, query))
                     .limit(limit)
@@ -112,6 +135,10 @@ public final class WorkspaceTools {
         if (!resolved.startsWith(root)) {
             throw new SecurityException("Path escapes workspace: " + path);
         }
+        Path relative = root.relativize(resolved);
+        if (isDenied(relative)) {
+            throw new SecurityException("Access to sensitive workspace path is denied: " + path);
+        }
         try {
             Path rootReal = Files.exists(root) ? root.toRealPath() : root.toAbsolutePath().normalize();
             Path checkPath = resolved;
@@ -128,6 +155,43 @@ public final class WorkspaceTools {
             throw new SecurityException("Could not verify path security: " + path, e);
         }
         return resolved;
+    }
+
+    private boolean isAllowed(Path path) {
+        Path relative = root.relativize(path.toAbsolutePath().normalize());
+        if (isDenied(relative)) {
+            return false;
+        }
+        try {
+            return path.toRealPath().startsWith(realRoot);
+        } catch (IOException | SecurityException ignored) {
+            return false;
+        }
+    }
+
+    private boolean isDenied(Path relative) {
+        Path lowerCase = Path.of(relative.toString().toLowerCase(Locale.ROOT));
+        return denyMatchers.stream().anyMatch(matcher ->
+                matcher.matches(relative) || matcher.matches(lowerCase));
+    }
+
+    private static Path realPathOrNormalized(Path path) {
+        try {
+            return Files.exists(path) ? path.toRealPath() : path.toAbsolutePath().normalize();
+        } catch (IOException e) {
+            throw new IllegalArgumentException("Could not resolve workspace root: " + path, e);
+        }
+    }
+
+    private static List<PathMatcher> buildMatchers(List<String> globs) {
+        List<PathMatcher> matchers = new ArrayList<>();
+        for (String glob : globs) {
+            matchers.add(FileSystems.getDefault().getPathMatcher("glob:" + glob));
+            if (glob.startsWith("**/")) {
+                matchers.add(FileSystems.getDefault().getPathMatcher("glob:" + glob.substring(3)));
+            }
+        }
+        return List.copyOf(matchers);
     }
 
     private boolean isSmallEnough(Path path) {

@@ -51,7 +51,7 @@ container, etc.) rather than a local solo install.
   ```
 - Run local harness:
   ```bash
-  ./build/install/cast-cli/bin/cast-cli ask --prompt "Explain the architecture of this repository"
+  ./build/install/cast-cli/bin/cast-cli ask "Explain the architecture of this repository"
   ```
 
 ### Docker Container Deployment
@@ -73,7 +73,7 @@ container, etc.) rather than a local solo install.
   ```bash
   docker compose up -d
   docker compose exec ollama ollama pull qwen3.5:9b   # pull whatever models your config references
-  docker compose run --rm cast-cli cast-cli doctor
+  docker compose run --rm cast-cli doctor
   ```
   (`run --rm` rather than `exec`: the `cast-cli` service runs `mcp-serve`, an stdio server with no
   attached stdin, so it isn't a long-lived shell target to `exec` into.)
@@ -100,20 +100,24 @@ cast-cli doctor --json
 ## 3. Security & Sandboxing Guidelines
 
 ### Process & Tool Execution
-- [ProcessExecTool](file:///c:/Users/justnels/Projects/CastCLI/src/main/java/dev/justnels/castcli/tools/ProcessExecTool.java) requires explicit configuration approval:
+- [ProcessExecTool](../src/main/java/dev/justnels/castcli/tools/ProcessExecTool.java) requires explicit configuration approval:
   ```json
   "tools": {
     "allowShellExec": true,
     "allowWrites": false
   }
   ```
-- Tool execution is additionally restricted by an [ApprovalGate](file:///c:/Users/justnels/Projects/CastCLI/src/main/java/dev/justnels/castcli/tools/ApprovalGate.java) (`ConsoleApprovalGate` in interactive CLI mode, `AutoApprovalGate` in automated library mode).
+- Tool execution is additionally restricted by an [ApprovalGate](../src/main/java/dev/justnels/castcli/tools/ApprovalGate.java)
+  (`ConsoleApprovalGate` in interactive CLI mode). Library callers fail closed unless they explicitly
+  provide an approval policy; use `AutoApprovalGate` only in a separately sandboxed trusted workflow.
 - *Production Environment Requirement*: Run CastCLI containers with read-only root filesystems and restricted volume mounts, using gVisor or standard Docker user namespace remapping.
 
 ### Secret Management & Governance
 - Never commit API keys or sensitive endpoints to configuration files.
 - Inject keys dynamically using environment variables (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) or secret integration tools (e.g. `aws secretsmanager` or HashiCorp Vault agent sidecars).
-- All secret patterns are redacted automatically from telemetry traces and audit logs via [SecretRedactor](file:///c:/Users/justnels/Projects/CastCLI/src/main/java/dev/justnels/castcli/observability/SecretRedactor.java).
+- Common secret patterns are redacted from telemetry traces and audit logs via
+  [SecretRedactor](../src/main/java/dev/justnels/castcli/observability/SecretRedactor.java). Pattern
+  redaction is defense in depth, not a guarantee; keep prompt capture disabled unless its storage is approved.
 
 ---
 

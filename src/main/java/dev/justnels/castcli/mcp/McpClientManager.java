@@ -55,7 +55,7 @@ public final class McpClientManager implements AutoCloseable {
 
         return new dev.langchain4j.mcp.client.DefaultMcpClient.Builder()
                 .key(serverConfig.name())
-                .clientName("java-local-llm-harness")
+                .clientName("cast-cli")
                 .transport(transport)
                 .build();
     }

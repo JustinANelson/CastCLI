@@ -62,6 +62,23 @@ class HealthHttpServerTest {
     }
 
     @Test
+    void defaultsToLoopbackAndLivenessDoesNotExposeDiagnostics() throws Exception {
+        assertThat(server.getAddress().getAddress().isLoopbackAddress()).isTrue();
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create("http://localhost:" + server.getPort() + "/livez"))
+                .GET()
+                .build();
+
+        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+        assertThat(response.statusCode()).isEqualTo(200);
+        assertThat(response.body()).isEqualTo("""
+                {"status":"UP"}
+                """.strip());
+        assertThat(response.body()).doesNotContain(tempDir.toString(), "Providers", "Config");
+    }
+
+    @Test
     void metricsEndpointReturnsPrometheusFormat() throws Exception {
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create("http://localhost:" + server.getPort() + "/metrics"))

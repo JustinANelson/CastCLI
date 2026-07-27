@@ -154,9 +154,9 @@ completed subtasks.
 
 ## Acting as an MCP server
 
-`McpStdioServer` implements the MCP 2024-11-05 stdio transport directly (newline-delimited JSON-RPC 2.0)
-rather than depending on a third-party server SDK, and exposes `ask_local`, `list_models`, and the
-workspace read/list/search tools. It is constructed from a `HarnessConfig` with every `FRONTIER_CLOUD`
+`McpStdioServer` implements the current MCP 2025-11-25 stdio transport directly (newline-delimited
+JSON-RPC 2.0), negotiates supported older revisions during initialization, and exposes `ask_local`,
+`list_models`, and the workspace read/list/search tools. It is constructed from a `HarnessConfig` with every `FRONTIER_CLOUD`
 provider filtered out, so it can never proxy a call to a frontier model — the point is to give a frontier
 agent (e.g. Claude Code, wired up as an MCP client) a place to offload routine, low-stakes subtasks onto
 this harness's cheap local/small tiers. Run it with `cast-cli mcp-serve`.

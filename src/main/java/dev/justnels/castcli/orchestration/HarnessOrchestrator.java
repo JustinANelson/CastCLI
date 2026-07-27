@@ -14,8 +14,8 @@ import dev.justnels.castcli.reliability.ProviderHealthRegistry;
 import dev.justnels.castcli.reliability.ReliabilityExecutor;
 import dev.justnels.castcli.security.GuardrailFilter;
 import dev.justnels.castcli.tools.ApprovalGate;
-import dev.justnels.castcli.tools.AutoApprovalGate;
 import dev.justnels.castcli.tools.DefaultToolSelector;
+import dev.justnels.castcli.tools.DenyApprovalGate;
 import dev.justnels.castcli.tools.FastPathExecutor;
 import dev.justnels.castcli.tools.MemoryTools;
 import dev.justnels.castcli.tools.SemanticSearchTools;
@@ -98,11 +98,11 @@ public class HarnessOrchestrator {
     private final CastTelemetry telemetry;
 
     public HarnessOrchestrator(HarnessConfig config) {
-        this(config, new ChatModelFactory(), new DefaultToolSelector(), new FastPathExecutor(), AutoApprovalGate.INSTANCE, null);
+        this(config, new ChatModelFactory(), new DefaultToolSelector(), new FastPathExecutor(), DenyApprovalGate.INSTANCE, null);
     }
 
     HarnessOrchestrator(HarnessConfig config, ChatModelFactory modelFactory) {
-        this(config, modelFactory, new DefaultToolSelector(), new FastPathExecutor(), AutoApprovalGate.INSTANCE, null);
+        this(config, modelFactory, new DefaultToolSelector(), new FastPathExecutor(), DenyApprovalGate.INSTANCE, null);
     }
 
     HarnessOrchestrator(
@@ -110,7 +110,7 @@ public class HarnessOrchestrator {
             ChatModelFactory modelFactory,
             ToolSelector toolSelector,
             FastPathExecutor fastPathExecutor) {
-        this(config, modelFactory, toolSelector, fastPathExecutor, AutoApprovalGate.INSTANCE, null);
+        this(config, modelFactory, toolSelector, fastPathExecutor, DenyApprovalGate.INSTANCE, null);
     }
 
     public HarnessOrchestrator(
@@ -129,7 +129,7 @@ public class HarnessOrchestrator {
         this.modelFactory = modelFactory;
         this.toolSelector = toolSelector;
         this.fastPathExecutor = fastPathExecutor;
-        this.approvalGate = approvalGate == null ? AutoApprovalGate.INSTANCE : approvalGate;
+        this.approvalGate = approvalGate == null ? DenyApprovalGate.INSTANCE : approvalGate;
         this.mcpToolProvider = mcpToolProvider;
         this.embeddingIndex = config.embeddings().enabled()
                 ? new WorkspaceEmbeddingIndex(config.embeddings(), Path.of(config.tools().workspaceRoot()),
@@ -408,4 +408,3 @@ public class HarnessOrchestrator {
                 .put("castcli.provider.tier", provider.tier().name()).build();
     }
 }
-

@@ -66,8 +66,8 @@ class McpStdioServerTest {
         assertThat(responses).hasSize(6); // no response for the notification
 
         JsonNode initResult = responses.get(0).get("result");
-        assertThat(initResult.get("protocolVersion").asText()).isEqualTo("2024-11-05");
-        assertThat(initResult.get("serverInfo").get("name").asText()).isEqualTo("java-local-llm-harness");
+        assertThat(initResult.get("protocolVersion").asText()).isEqualTo("2025-11-25");
+        assertThat(initResult.get("serverInfo").get("name").asText()).isEqualTo("cast-cli");
 
         JsonNode toolsList = responses.get(1).get("result").get("tools");
         List<String> toolNames = toolsList.findValuesAsText("name");
@@ -120,11 +120,13 @@ class McpStdioServerTest {
         String request = """
                 {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"ask_local","arguments":{"prompt":"summarize this","workload":"QUICK"}}}
                 """;
+        request = handshake() + request;
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         new McpStdioServer(config, new ByteArrayInputStream(request.getBytes(StandardCharsets.UTF_8)),
                 new PrintStream(out, true, StandardCharsets.UTF_8), fakeOrchestrator).serve();
 
-        JsonNode result = readTree(out.toString(StandardCharsets.UTF_8).trim()).path("result");
+        JsonNode result = out.toString(StandardCharsets.UTF_8).lines()
+                .map(this::readTree).toList().getLast().path("result");
 
         assertThat(result.path("content").get(0).path("text").asText())
                 .contains("delegated answer", "CastCLI delegation", "small/small-model", "52 local tokens");
@@ -157,18 +159,19 @@ class McpStdioServerTest {
                 "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"ask_local\",\"arguments\":{\"prompt\":\"hello\",\"workload\":\"ANALYSIS\"}}}") + "\n";
 
         ByteArrayOutputStream out = new ByteArrayOutputStream();
-        new McpStdioServer(config, new ByteArrayInputStream(requests.getBytes(StandardCharsets.UTF_8)),
+        new McpStdioServer(config, new ByteArrayInputStream(
+                (handshake() + requests).getBytes(StandardCharsets.UTF_8)),
                 new PrintStream(out, true, StandardCharsets.UTF_8), fakeOrchestrator).serve();
         List<JsonNode> responses = out.toString(StandardCharsets.UTF_8).lines().map(this::readTree).toList();
 
-        JsonNode summary = responses.get(0).path("result");
+        JsonNode summary = responses.get(1).path("result");
         assertThat(summary.path("content").get(0).path("text").asText())
                 .contains("structured answer", "CastCLI delegation");
         assertThat(summary.path("_meta").path("castcli/provider").asText()).isEqualTo("small");
         assertThat(captured.get().workload()).isEqualTo(Workload.QUICK);
         assertThat(captured.get().prompt()).contains("Hello.java", "return 1", "What does value return?");
 
-        JsonNode invalid = responses.get(1).path("result");
+        JsonNode invalid = responses.get(2).path("result");
         assertThat(invalid.path("isError").asBoolean()).isTrue();
         assertThat(invalid.path("content").get(0).path("text").asText())
                 .contains("AUTO, QUICK, CODE, or REASONING");
@@ -182,6 +185,27 @@ class McpStdioServerTest {
         assertThat(usage.getLast().success()).isFalse();
     }
 
+    @Test
+    void rejectsMalformedAndPreInitializationRequests() throws Exception {
+        ProviderConfig provider = new ProviderConfig("small", ModelTier.SMALL_LOCAL, "http://fake/v1/",
+                "small-model", null, 0.1, 30, true, true);
+        HarnessConfig config = new HarnessConfig(List.of(provider), new RoutingConfig(240, true),
+                new ToolConfig(workspace.toString(), 100_000, false));
+        String requests = """
+                {not-json
+                {"jsonrpc":"2.0","id":1,"method":"tools/list"}
+                """;
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+
+        new McpStdioServer(config, new ByteArrayInputStream(requests.getBytes(StandardCharsets.UTF_8)),
+                new PrintStream(out, true, StandardCharsets.UTF_8)).serve();
+
+        List<JsonNode> responses = out.toString(StandardCharsets.UTF_8).lines().map(this::readTree).toList();
+        assertThat(responses).hasSize(2);
+        assertThat(responses.get(0).path("error").path("code").asInt()).isEqualTo(-32700);
+        assertThat(responses.get(1).path("error").path("code").asInt()).isEqualTo(-32002);
+    }
+
     private JsonNode readTree(String line) {
         try {
             return mapper.readTree(line);
@@ -189,5 +213,11 @@ class McpStdioServerTest {
             throw new RuntimeException(e);
         }
     }
-}
 
+    private static String handshake() {
+        return """
+                {"jsonrpc":"2.0","id":100,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}
+                {"jsonrpc":"2.0","method":"notifications/initialized"}
+                """;
+    }
+}

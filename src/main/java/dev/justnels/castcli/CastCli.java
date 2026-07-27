@@ -774,13 +774,24 @@ public final class CastCli implements Runnable {
         @Option(names = "--port", defaultValue = "8080", description = "Port to listen on for HTTP health/metrics endpoints.")
         private int port;
 
+        @Option(names = "--bind", defaultValue = "127.0.0.1",
+                description = "Address to bind (default: loopback; use 0.0.0.0 only on a trusted network).")
+        private String bindAddress;
+
         @Override public Integer call() throws Exception {
             HarnessConfig config = parent.loadConfig();
+            if (!"127.0.0.1".equals(bindAddress) && !"localhost".equalsIgnoreCase(bindAddress)
+                    && !"::1".equals(bindAddress)) {
+                System.err.println("WARNING: detailed health diagnostics will be reachable on " + bindAddress
+                        + "; place this endpoint behind network access controls.");
+            }
             try (dev.justnels.castcli.doctor.HealthHttpServer server =
-                         new dev.justnels.castcli.doctor.HealthHttpServer(port, config, parent.configPath)) {
+                         new dev.justnels.castcli.doctor.HealthHttpServer(
+                                 bindAddress, port, config, parent.configPath)) {
                 server.start();
                 dev.justnels.castcli.lifecycle.ShutdownHookManager.getInstance().register(server);
-                System.out.println("Health HTTP server started on port " + server.getPort() + ". Press Ctrl+C to stop.");
+                System.out.println("Health HTTP server started on " + server.getAddress()
+                        + ". Press Ctrl+C to stop.");
                 Thread.currentThread().join();
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
@@ -798,10 +809,70 @@ public final class CastCli implements Runnable {
         @Override
         public Integer call() {
             CommandLine cmd = new CommandLine(new CastCli());
-            String script = picocli.AutoComplete.bash("cast-cli", cmd);
+            String script;
+            switch (shell.toLowerCase(java.util.Locale.ROOT)) {
+                case "bash" -> script = picocli.AutoComplete.bash("cast-cli", cmd);
+                case "zsh" -> script = zshCompletion();
+                case "powershell", "pwsh" -> script = powershellCompletion();
+                default -> {
+                    System.err.println("Unsupported shell '" + shell + "'. Use bash, zsh, or powershell.");
+                    return 2;
+                }
+            }
             System.out.println(script);
             return 0;
         }
+
+        private static String zshCompletion() {
+            return """
+                    #compdef cast-cli
+                    _cast_cli() {
+                      local -a commands
+                      commands=(
+                        'init:detect hardware and write starter configuration'
+                        'doctor:run diagnostics'
+                        'config:validate configuration'
+                        'ask:route and run a prompt'
+                        'commission:run the multi-agent pipeline'
+                        'models:list configured providers'
+                        'memory:inspect or update project memory'
+                        'index:build or query the semantic index'
+                        'route-eval:evaluate routing policy'
+                        'telemetry:inspect or flush telemetry'
+                        'mcp-serve:serve local delegation tools over stdio'
+                        'mcp-usage:report MCP delegation utilization'
+                        'health-server:serve health and metrics endpoints'
+                        'completion:generate shell completion'
+                      )
+                      _arguments -C \
+                        '(-h --help)'{-h,--help}'[show help]' \
+                        '(-V --version)'{-V,--version}'[show version]' \
+                        '--config[configuration file]:file:_files' \
+                        '1:command:->command' \
+                        '*::argument:->args'
+                      [[ $state == command ]] && _describe 'command' commands
+                    }
+                    compdef _cast_cli cast-cli
+                    """;
+        }
+
+        private static String powershellCompletion() {
+            return """
+                    Register-ArgumentCompleter -Native -CommandName cast-cli -ScriptBlock {
+                        param($wordToComplete, $commandAst, $cursorPosition)
+                        $candidates = @(
+                            '--help','--version','--config',
+                            'init','doctor','config','ask','commission','models','memory','index',
+                            'route-eval','telemetry','mcp-serve','mcp-usage','health-server','completion'
+                        )
+                        $candidates |
+                            Where-Object { $_ -like "$wordToComplete*" } |
+                            ForEach-Object {
+                                [System.Management.Automation.CompletionResult]::new(
+                                    $_, $_, 'ParameterValue', $_)
+                            }
+                    }
+                    """;
+        }
     }
 }
-

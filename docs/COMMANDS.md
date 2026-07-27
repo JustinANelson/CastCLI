@@ -102,6 +102,14 @@ Model names are examples, not hard requirements. Any server with an OpenAI-compa
 
 Valid workloads are `AUTO`, `QUICK`, `CODE`, and `REASONING`. Valid tiers are `SMALL_LOCAL`, `LARGE_LOCAL`, and `FRONTIER_CLOUD`.
 
+Generate shell completion for your current shell:
+
+```powershell
+cast-cli completion --shell bash
+cast-cli completion --shell zsh
+cast-cli completion --shell powershell
+```
+
 Write and process-exec tools (`writeWorkspaceFile`, `runCommand`) only activate when `tools.allowWrites` /
 `tools.allowShellExec` are `true` in the harness config, and by default still pause for an interactive
 `y/N` confirmation on every call; pass `--yes` to auto-approve instead (do this only in trusted, unattended
@@ -136,4 +144,3 @@ Do not commit `config/harness.local.json` or `.env`; both are ignored.
 ./gradlew.bat dependencyUpdates   # only after adding a dependency-update plugin
 ./gradlew.bat clean
 ```
-

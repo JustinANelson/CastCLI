@@ -12,8 +12,9 @@ LangChain4j supplies the chat and function-calling API; Jackson loads configurat
 
 **No JDK, no build.** Download the bundle for your OS from the
 [latest release](https://github.com/JustinANelson/CastCLI/releases/latest)
-(`cast-cli-windows-x64.zip`, `cast-cli-linux-x64.zip`, or
-`cast-cli-macos-arm64.zip`) and unzip it — each bundle embeds its own Java runtime. With
+(`cast-cli-windows-x64.zip`, `cast-cli-linux-x64.zip`,
+`cast-cli-macos-arm64.zip`, or `cast-cli-macos-x64.zip`) and unzip it — each bundle embeds its
+own Java runtime. With
 [Ollama](https://ollama.com) installed and running, `init` detects your hardware (VRAM on
 Windows/Linux with an NVIDIA GPU, or Apple Silicon) and writes a matching starter config instead of
 you hand-picking one of the `config/harness.vram-*.json` presets:

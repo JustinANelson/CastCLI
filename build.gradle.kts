@@ -3,15 +3,20 @@ plugins {
     java
     jacoco
     checkstyle
+    id("org.cyclonedx.bom") version "3.3.0"
 }
 
 group = "dev.justnels.castcli"
 version = (findProperty("castcliVersion") as String?)
     ?: System.getenv("CASTCLI_VERSION")
-    ?: "0.1.0-SNAPSHOT"
+    ?: "0.1.1-SNAPSHOT"
 
 repositories {
     mavenCentral()
+}
+
+dependencyLocking {
+    lockAllConfigurations()
 }
 
 checkstyle {
@@ -34,7 +39,7 @@ dependencies {
     implementation("dev.langchain4j:langchain4j")
     implementation("dev.langchain4j:langchain4j-open-ai")
     implementation("dev.langchain4j:langchain4j-mcp:1.18.0-beta28")
-    implementation("com.fasterxml.jackson.core:jackson-databind:2.20.1")
+    implementation("com.fasterxml.jackson.core:jackson-databind:2.22.1")
     implementation("info.picocli:picocli:4.7.7")
     implementation("ch.qos.logback:logback-classic:1.5.18")
     implementation("org.xerial:sqlite-jdbc:3.51.2.0")

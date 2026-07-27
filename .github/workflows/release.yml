@@ -8,6 +8,8 @@ on:
 permissions:
   contents: write
   packages: write
+  id-token: write
+  attestations: write
 
 env:
   # Strips the leading "v" from a tag like v1.2.0 so it's a valid jpackage/semver version.
@@ -19,10 +21,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up JDK 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
         with:
           java-version: '21'
           distribution: 'temurin'
@@ -38,30 +40,48 @@ jobs:
         run: ./gradlew test
 
       - name: Build distribution archives
-        run: ./gradlew installDist distZip distTar -PcastcliVersion="$CASTCLI_VERSION"
+        run: ./gradlew installDist distZip distTar cyclonedxBom -PcastcliVersion="$CASTCLI_VERSION"
+
+      - name: Add SBOM and checksums
+        run: |
+          cp build/reports/cyclonedx/bom.json "build/distributions/cast-cli-${CASTCLI_VERSION}-sbom.cdx.json"
+          cp build/reports/cyclonedx/bom.xml "build/distributions/cast-cli-${CASTCLI_VERSION}-sbom.cdx.xml"
+          cd build/distributions
+          sha256sum *.zip *.tar *.json *.xml > SHA256SUMS
+
+      - name: Attest distribution archives and SBOM
+        uses: actions/attest@36051bcae73b7c2a8a6945a48cbf80953c6baa35 # v4
+        with:
+          subject-path: |
+            build/distributions/*.zip
+            build/distributions/*.tar
+            build/distributions/*-sbom.cdx.json
+            build/distributions/*-sbom.cdx.xml
+            build/distributions/SHA256SUMS
 
       - name: Verify local CLI config validate command
         run: ./build/install/cast-cli/bin/cast-cli --config config/harness.example.json config validate
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up QEMU for multi-arch builds
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Lowercase repository name for image tags
         # Docker/OCI image references must be all-lowercase; github.repository preserves case.
         run: echo "IMAGE_REPO=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
 
       - name: Build and push Docker image
-        uses: docker/build-push-action@v6
+        id: push
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -70,12 +90,22 @@ jobs:
             ghcr.io/${{ env.IMAGE_REPO }}:${{ github.ref_name }}
             ghcr.io/${{ env.IMAGE_REPO }}:latest
 
+      - name: Attest container image
+        uses: actions/attest@36051bcae73b7c2a8a6945a48cbf80953c6baa35 # v4
+        with:
+          subject-name: ghcr.io/${{ env.IMAGE_REPO }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: |
             build/distributions/*.zip
             build/distributions/*.tar
+            build/distributions/*-sbom.cdx.json
+            build/distributions/*-sbom.cdx.xml
+            build/distributions/SHA256SUMS
           generate_release_notes: true
 
   native-bundles:
@@ -96,10 +126,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up JDK 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
         with:
           java-version: '21'
           distribution: 'temurin'
@@ -149,7 +179,27 @@ jobs:
         shell: pwsh
         run: Compress-Archive -Path build/jpackage/cast-cli -DestinationPath ${{ matrix.asset }}.zip
 
-      - name: Upload bundle to release
-        uses: softprops/action-gh-release@v2
+      - name: Write checksum (Unix)
+        if: runner.os != 'Windows'
+        run: shasum -a 256 "${{ matrix.asset }}.zip" > "${{ matrix.asset }}.zip.sha256"
+
+      - name: Write checksum (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash "${{ matrix.asset }}.zip" -Algorithm SHA256).Hash.ToLower()
+          "$hash  ${{ matrix.asset }}.zip" | Set-Content "${{ matrix.asset }}.zip.sha256"
+
+      - name: Attest native bundle
+        uses: actions/attest@36051bcae73b7c2a8a6945a48cbf80953c6baa35 # v4
         with:
-          files: ${{ matrix.asset }}.zip
+          subject-path: |
+            ${{ matrix.asset }}.zip
+            ${{ matrix.asset }}.zip.sha256
+
+      - name: Upload bundle to release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          files: |
+            ${{ matrix.asset }}.zip
+            ${{ matrix.asset }}.zip.sha256

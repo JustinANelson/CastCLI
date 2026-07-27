@@ -4,10 +4,15 @@ import dev.langchain4j.agent.tool.P;
 import dev.langchain4j.agent.tool.Tool;
 
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -33,10 +38,15 @@ public final class ProcessExecTool {
     private final ProcessSandboxGuard sandboxGuard;
 
     public ProcessExecTool(Path workingDirectory, boolean execAllowed, ApprovalGate approvalGate) {
+        this(workingDirectory, execAllowed, approvalGate, TIMEOUT_SECONDS, MAX_OUTPUT_CHARS);
+    }
+
+    ProcessExecTool(Path workingDirectory, boolean execAllowed, ApprovalGate approvalGate,
+                    long timeoutSeconds, int maxOutputChars) {
         this.workingDirectory = workingDirectory.toAbsolutePath().normalize();
         this.execAllowed = execAllowed;
-        this.approvalGate = approvalGate == null ? AutoApprovalGate.INSTANCE : approvalGate;
-        this.sandboxGuard = new ProcessSandboxGuard(this.workingDirectory, TIMEOUT_SECONDS, MAX_OUTPUT_CHARS);
+        this.approvalGate = approvalGate == null ? DenyApprovalGate.INSTANCE : approvalGate;
+        this.sandboxGuard = new ProcessSandboxGuard(this.workingDirectory, timeoutSeconds, maxOutputChars);
     }
 
     @Tool("Runs a pre-approved build/test/VCS command. commandKey must be one of: "
@@ -59,7 +69,10 @@ public final class ProcessExecTool {
             return "Execution denied by approval gate: " + commandKey;
         }
         String result = execute(command);
-        dev.justnels.castcli.audit.AuditLogger.getInstance().log("PROCESS_EXEC", "harness", "runCommand", commandKey, "SUCCESS", java.util.Map.of("command", cmdStr));
+        String outcome = result.startsWith("Exit code: 0\n") ? "SUCCESS" : "FAILED";
+        dev.justnels.castcli.audit.AuditLogger.getInstance().log(
+                "PROCESS_EXEC", "harness", "runCommand", commandKey, outcome,
+                java.util.Map.of("command", cmdStr));
         return result;
     }
 
@@ -82,33 +95,74 @@ public final class ProcessExecTool {
         ProcessBuilder builder = new ProcessBuilder(command)
                 .directory(sandboxGuard.validateWorkingDirectory(workingDirectory).toFile())
                 .redirectErrorStream(true);
-        sandboxGuard.sanitizeEnvironment(builder.environment());
+        sandboxGuard.applySanitizedEnvironment(builder.environment());
         Process process = builder.start();
-        String output;
-        try (var stream = process.getInputStream()) {
-            output = new String(stream.readAllBytes(), StandardCharsets.UTF_8);
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            Future<String> output = executor.submit(() -> captureOutput(
+                    process.getInputStream(), sandboxGuard.getMaxOutputChars()));
+            boolean finished;
+            try {
+                finished = process.waitFor(sandboxGuard.getTimeoutSeconds(), TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                terminateProcessTree(process);
+                return "Command interrupted before completion.";
+            }
+            if (!finished) {
+                terminateProcessTree(process);
+                return "Command timed out after " + sandboxGuard.getTimeoutSeconds()
+                        + "s and was terminated.\n" + completedOutput(output);
+            }
+            return "Exit code: " + process.exitValue() + "\n" + completedOutput(output);
         }
-        boolean finished;
-        try {
-            finished = process.waitFor(TIMEOUT_SECONDS, TimeUnit.SECONDS);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            process.destroyForcibly();
-            return "Command interrupted before completion.";
-        }
-        if (!finished) {
-            process.destroyForcibly();
-            return "Command timed out after " + TIMEOUT_SECONDS + "s and was terminated.\n" + truncate(output);
-        }
-        String truncated = truncate(output);
-        return "Exit code: " + process.exitValue() + "\n" + truncated;
     }
 
-    private static String truncate(String output) {
-        if (output.length() <= MAX_OUTPUT_CHARS) {
-            return output;
+    private static String completedOutput(Future<String> output) throws IOException {
+        try {
+            return output.get(5, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return "Output capture interrupted.";
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof IOException io) {
+                throw io;
+            }
+            throw new IOException("Could not capture command output", cause);
+        } catch (java.util.concurrent.TimeoutException e) {
+            return "Output capture did not finish after process termination.";
         }
-        return output.substring(0, MAX_OUTPUT_CHARS) + "\n...[truncated " + (output.length() - MAX_OUTPUT_CHARS) + " chars]";
+    }
+
+    static String captureOutput(InputStream stream, int maxChars) throws IOException {
+        StringBuilder captured = new StringBuilder(Math.min(maxChars, 8_000));
+        long omitted = 0;
+        char[] chunk = new char[2_048];
+        try (InputStreamReader reader = new InputStreamReader(stream, StandardCharsets.UTF_8)) {
+            int read;
+            while ((read = reader.read(chunk)) != -1) {
+                int remaining = maxChars - captured.length();
+                int accepted = Math.min(Math.max(remaining, 0), read);
+                if (accepted > 0) {
+                    captured.append(chunk, 0, accepted);
+                }
+                omitted += read - accepted;
+            }
+        }
+        if (omitted > 0) {
+            captured.append("\n...[truncated ").append(omitted).append(" chars]");
+        }
+        return captured.toString();
+    }
+
+    private static void terminateProcessTree(Process process) {
+        process.descendants().forEach(ProcessHandle::destroyForcibly);
+        process.destroyForcibly();
+        try {
+            process.getInputStream().close();
+        } catch (IOException ignored) {
+            // The process may already have closed the stream.
+        }
     }
 }
 

@@ -6,6 +6,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
 import java.util.List;
+import java.util.HashMap;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -57,7 +58,8 @@ class ProcessSandboxGuardTest {
         Map<String, String> originalEnv = Map.of(
                 "PATH", "/usr/bin",
                 "OPENAI_API_KEY", "sk-proj-secret123",
-                "AWS_SECRET_ACCESS_KEY", "super-secret"
+                "AWS_SECRET_ACCESS_KEY", "super-secret",
+                "UNEXPECTED_VENDOR_CREDENTIAL", "also-secret"
         );
 
         Map<String, String> sanitized = guard.sanitizeEnvironment(originalEnv);
@@ -65,5 +67,19 @@ class ProcessSandboxGuardTest {
         assertThat(sanitized).containsEntry("PATH", "/usr/bin");
         assertThat(sanitized).doesNotContainKey("OPENAI_API_KEY");
         assertThat(sanitized).doesNotContainKey("AWS_SECRET_ACCESS_KEY");
+        assertThat(sanitized).doesNotContainKey("UNEXPECTED_VENDOR_CREDENTIAL");
+    }
+
+    @Test
+    void appliesSanitizedEnvironmentToMutableProcessMap(@TempDir Path tempDir) {
+        ProcessSandboxGuard guard = new ProcessSandboxGuard(tempDir);
+        Map<String, String> environment = new HashMap<>(Map.of(
+                "PATH", "/usr/bin",
+                "OPENAI_API_KEY", "secret",
+                "CUSTOM_SECRET", "secret-two"));
+
+        guard.applySanitizedEnvironment(environment);
+
+        assertThat(environment).containsOnlyKeys("PATH");
     }
 }

@@ -3,6 +3,8 @@ package dev.justnels.castcli.tools;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.HashMap;
+import java.util.Locale;
 import java.util.Set;
 
 /**
@@ -10,9 +12,10 @@ import java.util.Set;
  * Validates working directories, sanitizes process environment variables, and enforces safety bounds.
  */
 public class ProcessSandboxGuard {
-    private static final Set<String> SENSITIVE_ENV_KEYS = Set.of(
-            "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "AWS_SECRET_ACCESS_KEY",
-            "AWS_SESSION_TOKEN", "GITHUB_TOKEN", "SLACK_BOT_TOKEN", "DATABASE_PASSWORD"
+    private static final Set<String> ALLOWED_ENV_KEYS = Set.of(
+            "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC",
+            "JAVA_HOME", "GRADLE_USER_HOME", "HOME", "USERPROFILE",
+            "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL", "TERM"
     );
 
     private final Path rootDirectory;
@@ -56,14 +59,25 @@ public class ProcessSandboxGuard {
     }
 
     /**
-     * Sanitizes process builder environment variables by removing sensitive environment secrets.
+     * Builds a minimal child environment. An allow-list is intentional: secret names are not
+     * enumerable, and provider-specific credentials must never reach repository-controlled builds.
      */
     public Map<String, String> sanitizeEnvironment(Map<String, String> originalEnv) {
-        Map<String, String> sanitized = new java.util.HashMap<>(originalEnv);
-        for (String key : SENSITIVE_ENV_KEYS) {
-            sanitized.remove(key);
+        Map<String, String> sanitized = new HashMap<>();
+        for (Map.Entry<String, String> entry : originalEnv.entrySet()) {
+            String normalized = entry.getKey().toUpperCase(Locale.ROOT);
+            if (ALLOWED_ENV_KEYS.contains(normalized) || normalized.startsWith("LC_")) {
+                sanitized.put(entry.getKey(), entry.getValue());
+            }
         }
         return Map.copyOf(sanitized);
+    }
+
+    /** Applies the minimal environment to a mutable {@link ProcessBuilder#environment()} map. */
+    public void applySanitizedEnvironment(Map<String, String> processEnvironment) {
+        Map<String, String> sanitized = sanitizeEnvironment(processEnvironment);
+        processEnvironment.clear();
+        processEnvironment.putAll(sanitized);
     }
 
     public long getTimeoutSeconds() {

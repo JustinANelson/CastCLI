@@ -29,30 +29,44 @@ public final class HealthHttpServer implements AutoCloseable {
     private final ObjectMapper mapper = new ObjectMapper();
 
     public HealthHttpServer(int port, HarnessConfig config, Path configPath) throws IOException {
-        this(port, config, configPath, new DoctorService());
+        this("127.0.0.1", port, config, configPath, new DoctorService());
     }
 
     public HealthHttpServer(int port, HarnessConfig config, Path configPath, DoctorService doctorService) throws IOException {
+        this("127.0.0.1", port, config, configPath, doctorService);
+    }
+
+    public HealthHttpServer(String bindAddress, int port, HarnessConfig config, Path configPath) throws IOException {
+        this(bindAddress, port, config, configPath, new DoctorService());
+    }
+
+    HealthHttpServer(String bindAddress, int port, HarnessConfig config, Path configPath,
+                     DoctorService doctorService) throws IOException {
         this.config = config;
         this.configPath = configPath;
         this.doctorService = doctorService;
-        this.server = HttpServer.create(new InetSocketAddress(port), 0);
+        this.server = HttpServer.create(new InetSocketAddress(bindAddress, port), 0);
         this.server.setExecutor(Executors.newVirtualThreadPerTaskExecutor());
 
         HealthHandler healthHandler = new HealthHandler();
         this.server.createContext("/healthz", healthHandler);
         this.server.createContext("/readyz", healthHandler);
-        this.server.createContext("/livez", healthHandler);
+        this.server.createContext("/livez", new LivenessHandler());
         this.server.createContext("/metrics", new MetricsHandler());
     }
 
     public void start() {
         server.start();
-        log.info("CastCLI Health HTTP Server listening on port {}", server.getAddress().getPort());
+        log.info("CastCLI Health HTTP Server listening on {}:{}",
+                server.getAddress().getHostString(), server.getAddress().getPort());
     }
 
     public int getPort() {
         return server.getAddress().getPort();
+    }
+
+    public InetSocketAddress getAddress() {
+        return server.getAddress();
     }
 
     @Override
@@ -79,6 +93,24 @@ public final class HealthHttpServer implements AutoCloseable {
             byte[] responseBytes = mapper.writeValueAsBytes(report);
             exchange.getResponseHeaders().set("Content-Type", "application/json; charset=UTF-8");
             exchange.sendResponseHeaders(statusCode, responseBytes.length);
+            try (OutputStream os = exchange.getResponseBody()) {
+                os.write(responseBytes);
+            }
+        }
+    }
+
+    private static class LivenessHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!"GET".equalsIgnoreCase(exchange.getRequestMethod())) {
+                exchange.sendResponseHeaders(405, -1);
+                return;
+            }
+            byte[] responseBytes = """
+                    {"status":"UP"}
+                    """.strip().getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "application/json; charset=UTF-8");
+            exchange.sendResponseHeaders(200, responseBytes.length);
             try (OutputStream os = exchange.getResponseBody()) {
                 os.write(responseBytes);
             }

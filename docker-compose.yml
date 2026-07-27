@@ -27,6 +27,8 @@ services:
       - ./config:/app/config:ro
       - cast_data:/app/.cast
     command: ["mcp-serve"]
+    # Keep stdin open for the stdio MCP server when Compose runs detached.
+    stdin_open: true
     restart: unless-stopped
 
 volumes:
