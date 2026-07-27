@@ -11,7 +11,7 @@ LangChain4j supplies the chat and function-calling API; Jackson loads configurat
 ## Quick start
 
 **No JDK, no build.** Download the bundle for your OS from the
-[latest release](https://github.com/JustinANelson/JavaLocalLLMHarness/releases/latest)
+[latest release](https://github.com/JustinANelson/CastCLI/releases/latest)
 (`cast-cli-windows-x64.zip`, `cast-cli-linux-x64.zip`, or
 `cast-cli-macos-arm64.zip`) and unzip it — each bundle embeds its own Java runtime. With
 [Ollama](https://ollama.com) installed and running, `init` detects your hardware (VRAM on
@@ -31,7 +31,7 @@ you hand-picking one of the `config/harness.vram-*.json` presets:
 > will warn you if a paid provider is enabled with no cap configured. Adjust these values in your
 > config's `reliability` block to match your own budget.
 
-Prefer a container? `docker run -i --rm ghcr.io/justinanelson/javalocalllmharness:latest doctor` works
+Prefer a container? `docker run -i --rm ghcr.io/justinanelson/castcli:latest doctor` works
 the same way without installing anything locally — see [docs/OPERATIONS.md](docs/OPERATIONS.md) for
 volume-mount and config details.
 

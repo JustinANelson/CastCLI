@@ -17,7 +17,7 @@ import java.time.Duration;
  */
 public final class UpdateChecker {
     private static final String RELEASES_API =
-            "https://api.github.com/repos/JustinANelson/JavaLocalLLMHarness/releases/latest";
+            "https://api.github.com/repos/JustinANelson/CastCLI/releases/latest";
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private final HttpClient client;

@@ -61,7 +61,7 @@ public final class DoctorService {
             } else if (update.updateAvailable()) {
                 results.add(new CheckResult("Version", "Update check", Status.WARNING,
                         "Running " + update.currentVersion() + "; " + update.latestVersion()
-                                + " is available: https://github.com/JustinANelson/JavaLocalLLMHarness/releases/latest"));
+                                + " is available: https://github.com/JustinANelson/CastCLI/releases/latest"));
             } else {
                 results.add(new CheckResult("Version", "Update check", Status.OK,
                         "Running " + update.currentVersion() + " (latest)"));

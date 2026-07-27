@@ -12,7 +12,7 @@ container behind CI, etc.) — skip them unless that applies to you.
 ## 0. Solo/Indie Quick Checklist
 
 - **Install**: grab the bundle for your OS from the
-  [latest release](https://github.com/JustinANelson/JavaLocalLLMHarness/releases/latest) — no JDK
+  [latest release](https://github.com/JustinANelson/CastCLI/releases/latest) — no JDK
   required, it embeds its own runtime — or `docker run` the published image. See the
   [README quick start](../README.md#quick-start).
 - **First run**: `cast-cli init` detects your GPU/VRAM (or Apple Silicon) and writes a matching
