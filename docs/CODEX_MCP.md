@@ -19,7 +19,16 @@ Each MCP tool result has an invocation ID and audit-file location in its MCP _me
 ends with a compact receipt containing provider, model, local token count, estimated cost, and trace ID.
 The durable audit includes successful and failed calls even when OpenTelemetry export is disabled.
 
-After asking Codex to perform suitable low-risk work, run:
+The report shows an **estimated frontier-equivalent cost** when a frontier reference is available. It is
+populated in two ways (in priority order):
+
+1. **`_meta.callerModel` per tool call** — the AGENTS.md policy instructs every frontier agent to include
+   `"_meta": {"callerModel": "<model-name>"}` alongside `arguments` in each cast-cli tool call. The server
+   records it on each audit entry, and `mcp-usage` resolves pricing from the harness config (matching by
+   `modelName`, case-insensitive) or falls back to the configured FRONTIER_CLOUD provider.
+2. **Configured FRONTIER_CLOUD reference provider** — add an enabled provider with `"tier": "FRONTIER_CLOUD"`
+   and non-zero `costPerMillionInputTokens`/`costPerMillionOutputTokens` in the harness config.
+
 
     ./gradlew.bat run --args="--config config/harness.local.json mcp-usage --since-hours 24 --fail-if-unused"
 

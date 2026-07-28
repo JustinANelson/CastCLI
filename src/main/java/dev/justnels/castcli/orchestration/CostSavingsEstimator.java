@@ -12,11 +12,17 @@ import java.util.Optional;
  * had the same input/output token counts been processed by a configured frontier model, what would that
  * have cost at its per-million-token rate? The first enabled FRONTIER_CLOUD provider in the config is used
  * as that reference point; if none is configured, every estimate is zero.
+ *
+ * <p>When a {@code callerModel} string is available (supplied via the MCP {@code _meta.callerModel}
+ * argument), the estimator first searches enabled providers for a case-insensitive {@code modelName} match
+ * and uses that provider's rates as the reference, falling back to the default FRONTIER_CLOUD provider.
  */
 public final class CostSavingsEstimator {
+    private final HarnessConfig config;
     private final ProviderConfig referenceFrontierProvider;
 
     public CostSavingsEstimator(HarnessConfig config) {
+        this.config = config;
         this.referenceFrontierProvider = config.providers().stream()
                 .filter(p -> p.tier() == ModelTier.FRONTIER_CLOUD)
                 .filter(ProviderConfig::enabled)
@@ -29,6 +35,22 @@ public final class CostSavingsEstimator {
     }
 
     public Optional<ProviderConfig> referenceProvider() {
+        return Optional.ofNullable(referenceFrontierProvider);
+    }
+
+    /**
+     * Resolves the best-match enabled provider for a caller model name string.
+     * Searches all enabled providers by case-insensitive {@code modelName} equality, then falls back
+     * to the default FRONTIER_CLOUD reference provider. Returns empty when no reference is available.
+     */
+    public Optional<ProviderConfig> resolveCallerProvider(String callerModel) {
+        if (callerModel != null && !callerModel.isBlank()) {
+            Optional<ProviderConfig> byName = config.providers().stream()
+                    .filter(ProviderConfig::enabled)
+                    .filter(p -> callerModel.equalsIgnoreCase(p.modelName()))
+                    .findFirst();
+            if (byName.isPresent()) return byName;
+        }
         return Optional.ofNullable(referenceFrontierProvider);
     }
 
@@ -46,6 +68,20 @@ public final class CostSavingsEstimator {
             return 0.0;
         }
         return referenceFrontierProvider.estimatedCostUsd(inputTokens, outputTokens);
+    }
+
+    /**
+     * Variant that also accepts a {@code callerModel} hint (from {@code _meta.callerModel}).
+     * When non-null, uses the best-matched provider's rates as the frontier reference instead of the
+     * default FRONTIER_CLOUD provider. Falls back identically to
+     * {@link #estimateAvoidedCostUsd(ProviderConfig, long, long)} when no match is found.
+     */
+    public double estimateAvoidedCostUsd(ProviderConfig actualProvider, long inputTokens, long outputTokens,
+                                         String callerModel) {
+        if (!isOffloaded(actualProvider)) return 0.0;
+        ProviderConfig reference = resolveCallerProvider(callerModel).orElse(null);
+        if (reference == null) return 0.0;
+        return reference.estimatedCostUsd(inputTokens, outputTokens);
     }
 }
 

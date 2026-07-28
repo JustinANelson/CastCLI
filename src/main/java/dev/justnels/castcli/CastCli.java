@@ -372,6 +372,8 @@ public final class CastCli implements Runnable {
         }
 
         private void printMcpUsage(McpUsageStore store, McpUsageSummary summary, Long codexTokenSavings) {
+            HarnessConfig config = parent.loadConfig();
+            CostSavingsEstimator estimator = new CostSavingsEstimator(config);
             System.out.println("MCP usage audit: " + store.path());
             System.out.printf("Calls: %d total / %d successful; delegations: %d attempts / %d successful (%.1f%%); ask_local: %d%n",
                     summary.totalCalls(), summary.successfulCalls(), summary.delegationCalls(),
@@ -381,10 +383,11 @@ public final class CastCli implements Runnable {
                     summary.localTotalTokens(), summary.localInputTokens(), summary.localOutputTokens(),
                     summary.localEstimatedCostUsd(), summary.averageDelegationDurationMs());
             if (summary.estimatedFrontierEquivalentCostUsd() > 0) {
-                System.out.printf("Estimated frontier equivalent: $%.5f; estimated cost avoided after local cost: $%.5f%n",
-                        summary.estimatedFrontierEquivalentCostUsd(), summary.estimatedCostAvoidedUsd());
+                String refLabel = buildFrontierRefLabel(summary, estimator);
+                System.out.printf("Estimated frontier equivalent: $%.5f (ref: %s); estimated cost avoided after local cost: $%.5f%n",
+                        summary.estimatedFrontierEquivalentCostUsd(), refLabel, summary.estimatedCostAvoidedUsd());
             } else {
-                System.out.println("Estimated frontier equivalent: unavailable (configure an enabled FRONTIER_CLOUD reference provider).");
+                System.out.println("Estimated frontier equivalent: unavailable (configure an enabled FRONTIER_CLOUD reference provider, or pass _meta.callerModel in tool calls).");
             }
             if (!summary.callsByTool().isEmpty()) System.out.println("Calls by tool: " + summary.callsByTool());
             summary.usageByProvider().forEach((provider, usage) ->
@@ -399,6 +402,18 @@ public final class CastCli implements Runnable {
                         delegatedCodexTokens, summary.localTotalTokens(),
                         delegatedCodexTokens + summary.localTotalTokens());
             }
+        }
+
+        private static String buildFrontierRefLabel(McpUsageSummary summary, CostSavingsEstimator estimator) {
+            if (!summary.callerModels().isEmpty()) {
+                // Records carried caller model(s) via _meta; show what was seen.
+                String joined = String.join(", ", summary.callerModels());
+                return joined + " (via _meta)";
+            }
+            // Fall back to the configured FRONTIER_CLOUD reference provider name.
+            return estimator.referenceProvider()
+                    .map(p -> p.modelName() + " [" + p.id() + "]")
+                    .orElse("unknown");
         }
     }
 

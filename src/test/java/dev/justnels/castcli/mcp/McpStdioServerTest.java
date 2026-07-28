@@ -206,6 +206,52 @@ class McpStdioServerTest {
         assertThat(responses.get(1).path("error").path("code").asInt()).isEqualTo(-32002);
     }
 
+    @Test
+    void callerModelFromMetaIsPersistedToUsageRecord() throws Exception {
+        ProviderConfig provider = new ProviderConfig("small", ModelTier.SMALL_LOCAL, "http://fake/v1/",
+                "small-model", null, 0.1, 30, true, true);
+        HarnessConfig config = new HarnessConfig(List.of(provider), new RoutingConfig(240, true),
+                new ToolConfig(workspace.toString(), 100_000, false));
+        Files.writeString(workspace.resolve("sample.txt"), "hello world\n");
+
+        // Tool call with _meta.callerModel alongside arguments
+        String request = """
+                {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_workspace_file","arguments":{"path":"sample.txt"},"_meta":{"callerModel":"claude-sonnet-4-6"}}}
+                """;
+        request = handshake() + request;
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        new McpStdioServer(config, new ByteArrayInputStream(request.getBytes(StandardCharsets.UTF_8)),
+                new PrintStream(out, true, StandardCharsets.UTF_8)).serve();
+
+        List<McpUsageRecord> usage = new McpUsageStore(workspace.resolve(".cast/metrics/mcp-usage.jsonl"))
+                .readSince(0);
+        assertThat(usage).hasSize(1);
+        assertThat(usage.getFirst().callerModel()).isEqualTo("claude-sonnet-4-6");
+    }
+
+    @Test
+    void absentMetaCallerModelRecordsNull() throws Exception {
+        ProviderConfig provider = new ProviderConfig("small", ModelTier.SMALL_LOCAL, "http://fake/v1/",
+                "small-model", null, 0.1, 30, true, true);
+        HarnessConfig config = new HarnessConfig(List.of(provider), new RoutingConfig(240, true),
+                new ToolConfig(workspace.toString(), 100_000, false));
+        Files.writeString(workspace.resolve("sample.txt"), "hello world\n");
+
+        // Tool call without _meta
+        String request = """
+                {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_workspace_file","arguments":{"path":"sample.txt"}}}
+                """;
+        request = handshake() + request;
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        new McpStdioServer(config, new ByteArrayInputStream(request.getBytes(StandardCharsets.UTF_8)),
+                new PrintStream(out, true, StandardCharsets.UTF_8)).serve();
+
+        List<McpUsageRecord> usage = new McpUsageStore(workspace.resolve(".cast/metrics/mcp-usage.jsonl"))
+                .readSince(0);
+        assertThat(usage).hasSize(1);
+        assertThat(usage.getFirst().callerModel()).isNull();
+    }
+
     private JsonNode readTree(String line) {
         try {
             return mapper.readTree(line);

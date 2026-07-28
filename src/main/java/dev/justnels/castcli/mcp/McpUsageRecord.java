@@ -19,7 +19,8 @@ public record McpUsageRecord(
         String promptSha256,
         int promptChars,
         int resultChars,
-        String errorType) {
+        String errorType,
+        String callerModel) {
     private static final Set<String> DELEGATION_TOOLS = Set.of(
             "ask_local", "summarize_files", "analyze_failure", "draft_patch",
             "generate_tests", "review_diff", "map_change_impact");

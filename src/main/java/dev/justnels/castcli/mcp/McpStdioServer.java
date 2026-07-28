@@ -204,6 +204,8 @@ public final class McpStdioServer {
             throw new McpProtocolException(-32602, "Missing params for tools/call");
         }
         String name = params.path("name").asText("");
+        // MCP spec reserves _meta at the params level as a standard extension point.
+        String callerModel = params.path("_meta").path("callerModel").asText(null);
         String invocationId = UUID.randomUUID().toString();
         long startedEpochMs = System.currentTimeMillis();
         long startedNanos = System.nanoTime();
@@ -219,7 +221,7 @@ public final class McpStdioServer {
             span.attribute("error.type", "unknown_tool");
             appendUsage(new McpUsageRecord(startedEpochMs, invocationId, span.traceId(), name, false,
                     elapsedMillis(startedNanos), null, null, null, 0, 0, 0, null, 0,
-                    content.get(0).path("text").asText().length(), "unknown_tool"));
+                    content.get(0).path("text").asText().length(), "unknown_tool", callerModel));
             return result;
         }
         JsonNode arguments = params.path("arguments");
@@ -237,7 +239,7 @@ public final class McpStdioServer {
                 metadata.put("castcli/usageAuditPath", usageStore.path().toString());
                 if (delegation != null) addDelegationMetadata(metadata, delegation);
             }
-            appendUsage(toUsageRecord(startedEpochMs, startedNanos, invocationId, name, text, delegation, span.traceId()));
+            appendUsage(toUsageRecord(startedEpochMs, startedNanos, invocationId, name, text, delegation, span.traceId(), callerModel));
         } catch (Exception e) {
             span.error(e);
             String errorText = "Tool execution failed: " + e.getMessage();
@@ -249,7 +251,7 @@ public final class McpStdioServer {
             }
             appendUsage(new McpUsageRecord(startedEpochMs, invocationId, span.traceId(), name, false,
                     elapsedMillis(startedNanos), null, null, null, 0, 0, 0, null,
-                    arguments.toString().length(), errorText.length(), e.getClass().getName()));
+                    arguments.toString().length(), errorText.length(), e.getClass().getName(), callerModel));
         }
         return result;
         }
@@ -443,15 +445,15 @@ public final class McpStdioServer {
 
     private static McpUsageRecord toUsageRecord(
             long startedEpochMs, long startedNanos, String invocationId, String toolName, String text,
-            McpTool.Delegation delegation, String fallbackTraceId) {
+            McpTool.Delegation delegation, String fallbackTraceId, String callerModel) {
         if (delegation == null) {
             return new McpUsageRecord(startedEpochMs, invocationId, fallbackTraceId, toolName, true,
-                    elapsedMillis(startedNanos), null, null, null, 0, 0, 0, null, 0, text.length(), null);
+                    elapsedMillis(startedNanos), null, null, null, 0, 0, 0, null, 0, text.length(), null, callerModel);
         }
         return new McpUsageRecord(startedEpochMs, invocationId, delegation.traceId(), toolName, true,
                 elapsedMillis(startedNanos), delegation.providerId(), delegation.providerTier(), delegation.modelName(),
                 delegation.inputTokens(), delegation.outputTokens(), delegation.estimatedCostUsd(),
-                delegation.promptSha256(), delegation.promptChars(), text.length(), null);
+                delegation.promptSha256(), delegation.promptChars(), text.length(), null, callerModel);
     }
 
     private static void addDelegationMetadata(ObjectNode metadata, McpTool.Delegation delegation) {

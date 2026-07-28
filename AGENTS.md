@@ -32,5 +32,11 @@ When delegation succeeds, use the returned answer instead of silently repeating 
 compact CastCLI delegation receipt in progress reporting when useful. If the result is inadequate, explain
 why before doing the task directly.
 
+Always include `"_meta": {"callerModel": "<your-model-name>"}` alongside the `arguments` in every CastCLI
+tool call (e.g. `"claude-sonnet-4-6"`, `"gpt-4o"`, `"gemini-2.0-flash"`). The server records it so that
+`cast-cli mcp-usage` can estimate how much frontier spend was avoided without requiring any harness
+configuration. The field is optional and advisory; omitting it degrades the cost report but does not affect
+tool behavior.
+
 For verification, run cast-cli mcp-usage --fail-if-unused (or the equivalent Gradle command documented in
 docs/CODEX_MCP.md). Use fresh, equivalent Codex sessions for A/B token comparisons.

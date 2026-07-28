@@ -5,8 +5,10 @@ import dev.justnels.castcli.config.ProviderConfig;
 import dev.justnels.castcli.orchestration.CostSavingsEstimator;
 
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.SequencedSet;
 import java.util.TreeMap;
 
 /** Aggregated, immutable view of MCP utilization and local-delegation efficiency. */
@@ -23,7 +25,8 @@ public record McpUsageSummary(
         double estimatedCostAvoidedUsd,
         long averageDelegationDurationMs,
         Map<String, Integer> callsByTool,
-        Map<String, ProviderUsage> usageByProvider) {
+        Map<String, ProviderUsage> usageByProvider,
+        List<String> callerModels) {
 
     public record ProviderUsage(int calls, long inputTokens, long outputTokens, double estimatedCostUsd) {
         public long totalTokens() { return inputTokens + outputTokens; }
@@ -44,6 +47,7 @@ public record McpUsageSummary(
         Map<String, ProviderConfig> providerConfigs = new LinkedHashMap<>();
         config.providers().forEach(provider -> providerConfigs.put(provider.id(), provider));
         CostSavingsEstimator estimator = new CostSavingsEstimator(config);
+        SequencedSet<String> callerModelsSeen = new LinkedHashSet<>();
 
         for (McpUsageRecord record : records) {
             tools.merge(record.toolName(), 1, Integer::sum);
@@ -59,8 +63,9 @@ public record McpUsageSummary(
             ProviderConfig provider = providerConfigs.get(record.providerId());
             if (provider != null) {
                 frontierEquivalentCost += estimator.estimateAvoidedCostUsd(
-                        provider, record.inputTokens(), record.outputTokens());
+                        provider, record.inputTokens(), record.outputTokens(), record.callerModel());
             }
+            if (record.callerModel() != null) callerModelsSeen.add(record.callerModel());
             providers.computeIfAbsent(record.providerId(), ignored -> new MutableProviderUsage())
                     .add(record);
         }
@@ -69,7 +74,8 @@ public record McpUsageSummary(
         providers.forEach((id, usage) -> immutableProviders.put(id, usage.freeze()));
         return new McpUsageSummary(records.size(), successful, askCalls, delegationCalls, delegations, input, output, localCost,
                 frontierEquivalentCost, Math.max(0, frontierEquivalentCost - localCost),
-                delegations == 0 ? 0 : duration / delegations, Map.copyOf(tools), Map.copyOf(immutableProviders));
+                delegations == 0 ? 0 : duration / delegations, Map.copyOf(tools), Map.copyOf(immutableProviders),
+                List.copyOf(callerModelsSeen));
     }
 
     public long localTotalTokens() {
