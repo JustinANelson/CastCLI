@@ -32,7 +32,7 @@ java {
 }
 
 dependencies {
-    checkstyle("com.puppycrawl.tools:checkstyle:10.14.0") {
+    checkstyle("com.puppycrawl.tools:checkstyle:13.9.0") {
         exclude(group = "com.google.collections", module = "google-collections")
     }
     implementation(platform("dev.langchain4j:langchain4j-bom:1.18.0"))
