@@ -43,7 +43,7 @@ class GatewayHttpServerTest {
 
     /** Stubs {@link HarnessOrchestrator#run} so tests exercise the gateway's HTTP/mapping layer
      * without making a real model call. */
-    private static final class StubOrchestrator extends HarnessOrchestrator {
+    private static class StubOrchestrator extends HarnessOrchestrator {
         private final Outcome outcome;
 
         StubOrchestrator(HarnessConfig config, Outcome outcome) {
@@ -112,12 +112,141 @@ class GatewayHttpServerTest {
     }
 
     @Test
-    void rejectsStreamingRequests() throws Exception {
-        HttpResponse<String> response = post("""
-                {"messages":[{"role":"user","content":"hi"}],"stream":true}
-                """);
-        assertThat(response.statusCode()).isEqualTo(400);
-        assertThat(response.body()).contains("stream=true");
+    void streamingReturnsChatCompletionChunksTerminatedByDone() throws Exception {
+        tearDown();
+        HarnessConfig config = config();
+        HarnessOrchestrator.Outcome outcome = new HarnessOrchestrator.Outcome(
+                config.providers().getFirst(), "hi there", List.of(), List.of(), 5L, false, 2L, 3L, 0.0);
+        startServer("127.0.0.1", null, new StubOrchestrator(config, outcome) {
+            @Override
+            public Outcome runStreaming(TaskRequest task, java.util.function.Consumer<String> onToken,
+                                          java.util.function.BooleanSupplier cancelled) {
+                onToken.accept("hi");
+                onToken.accept(" there");
+                return outcome;
+            }
+        });
+
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create("http://localhost:" + server.getPort() + "/v1/chat/completions"))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString("""
+                        {"messages":[{"role":"user","content":"hi"}],"stream":true,"stream_options":{"include_usage":true}}
+                        """))
+                .build();
+        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+        assertThat(response.statusCode()).isEqualTo(200);
+        assertThat(response.headers().firstValue("Content-Type")).hasValueSatisfying(
+                ct -> assertThat(ct).contains("text/event-stream"));
+        List<String> dataLines = response.body().lines().filter(line -> line.startsWith("data: ")).toList();
+        assertThat(dataLines.getLast()).isEqualTo("data: [DONE]");
+
+        JsonNode firstChunk = mapper.readTree(dataLines.get(0).substring("data: ".length()));
+        assertThat(firstChunk.path("object").asText()).isEqualTo("chat.completion.chunk");
+        assertThat(firstChunk.path("choices").get(0).path("delta").path("role").asText()).isEqualTo("assistant");
+        assertThat(firstChunk.path("choices").get(0).path("delta").path("content").asText()).isEqualTo("hi");
+
+        JsonNode secondChunk = mapper.readTree(dataLines.get(1).substring("data: ".length()));
+        assertThat(secondChunk.path("choices").get(0).path("delta").has("role")).isFalse();
+        assertThat(secondChunk.path("choices").get(0).path("delta").path("content").asText()).isEqualTo(" there");
+
+        JsonNode finishChunk = mapper.readTree(dataLines.get(2).substring("data: ".length()));
+        assertThat(finishChunk.path("choices").get(0).path("finish_reason").asText()).isEqualTo("stop");
+
+        JsonNode usageChunk = mapper.readTree(dataLines.get(3).substring("data: ".length()));
+        assertThat(usageChunk.path("choices").isEmpty()).isTrue();
+        assertThat(usageChunk.path("usage").path("prompt_tokens").asLong()).isEqualTo(2L);
+        assertThat(usageChunk.path("usage").path("completion_tokens").asLong()).isEqualTo(3L);
+    }
+
+    @Test
+    void streamingDeliversChunksIncrementallyRatherThanBuffering() throws Exception {
+        tearDown();
+        HarnessConfig config = config();
+        HarnessOrchestrator.Outcome outcome = new HarnessOrchestrator.Outcome(
+                config.providers().getFirst(), "done", List.of(), List.of(), 1L, false, 1L, 1L, 0.0);
+        long delayMillis = 1500;
+        startServer("127.0.0.1", null, new StubOrchestrator(config, outcome) {
+            @Override
+            public Outcome runStreaming(TaskRequest task, java.util.function.Consumer<String> onToken,
+                                          java.util.function.BooleanSupplier cancelled) {
+                onToken.accept("first");
+                try {
+                    Thread.sleep(delayMillis);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                onToken.accept("second");
+                return outcome;
+            }
+        });
+
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create("http://localhost:" + server.getPort() + "/v1/chat/completions"))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString("""
+                        {"messages":[{"role":"user","content":"hi"}],"stream":true}
+                        """))
+                .build();
+
+        long sentAt = System.currentTimeMillis();
+        HttpResponse<java.io.InputStream> response =
+                httpClient.send(request, HttpResponse.BodyHandlers.ofInputStream());
+        try (var reader = new java.io.BufferedReader(
+                new java.io.InputStreamReader(response.body(), java.nio.charset.StandardCharsets.UTF_8))) {
+            String firstDataLine = reader.readLine();
+            while (firstDataLine != null && !firstDataLine.startsWith("data: ")) {
+                firstDataLine = reader.readLine();
+            }
+            long elapsed = System.currentTimeMillis() - sentAt;
+            assertThat(firstDataLine).contains("\"content\":\"first\"");
+            assertThat(elapsed).isLessThan(delayMillis);
+        }
+    }
+
+    @Test
+    void streamingStopsPromptlyWhenClientDisconnects() throws Exception {
+        tearDown();
+        HarnessConfig config = config();
+        HarnessOrchestrator.Outcome outcome = new HarnessOrchestrator.Outcome(
+                config.providers().getFirst(), "unused", List.of(), List.of(), 1L, false, 0L, 0L, 0.0);
+        java.util.concurrent.atomic.AtomicBoolean observedCancellation = new java.util.concurrent.atomic.AtomicBoolean(false);
+        java.util.concurrent.CountDownLatch cancellationObserved = new java.util.concurrent.CountDownLatch(1);
+        startServer("127.0.0.1", null, new StubOrchestrator(config, outcome) {
+            @Override
+            public Outcome runStreaming(TaskRequest task, java.util.function.Consumer<String> onToken,
+                                          java.util.function.BooleanSupplier cancelled) {
+                while (!cancelled.getAsBoolean()) {
+                    onToken.accept("tick ");
+                    try {
+                        Thread.sleep(30);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
+                observedCancellation.set(true);
+                cancellationObserved.countDown();
+                return outcome;
+            }
+        });
+
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create("http://localhost:" + server.getPort() + "/v1/chat/completions"))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString("""
+                        {"messages":[{"role":"user","content":"hi"}],"stream":true}
+                        """))
+                .build();
+
+        HttpResponse<java.io.InputStream> response =
+                httpClient.send(request, HttpResponse.BodyHandlers.ofInputStream());
+        response.body().read();
+        response.body().close();
+
+        assertThat(cancellationObserved.await(3, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+        assertThat(observedCancellation.get()).isTrue();
     }
 
     @Test

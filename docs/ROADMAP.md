@@ -61,9 +61,13 @@ Goal: make CastCLI usable as a transparent control plane for existing coding age
 #### R-001: OpenAI-compatible inbound gateway — P0
 
 **Status: In progress.** Phase 1 (non-streaming `/v1/chat/completions` and `/v1/models`, no client
-tool passthrough, loopback-default with fail-closed bearer auth) is underway. Streaming, client-side
-tool passthrough, and multi-turn history are tracked as follow-on phases before this item can move
-to Complete.
+tool passthrough, loopback-default with fail-closed bearer auth) and Phase 2 (SSE streaming with
+cooperative, poll-based client-disconnect cancellation and optional `stream_options.include_usage`)
+are done. Client-side tool passthrough and multi-turn history remain as follow-on phases before this
+item can move to Complete. Known gaps carried forward: guardrail filtering on the streaming path is
+per-chunk only (a redacted pattern split across two streamed tokens is not caught); client-disconnect
+detection relies on the next attempted write failing, so a stalled/paused generation is not noticed
+until the next token attempt.
 
 Add a locally hosted API surface so clients can adopt CastCLI by changing a base URL.
 

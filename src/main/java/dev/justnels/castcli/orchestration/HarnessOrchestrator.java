@@ -37,6 +37,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import io.opentelemetry.api.common.Attributes;
 
@@ -260,15 +261,28 @@ public class HarnessOrchestrator {
 
     /** Streams tokens as they arrive via {@code onToken}; blocks until the response completes, then
      * returns the same {@link Outcome} shape as {@link #run(TaskRequest)}. Tools are not available
-     * on the streaming path. */
+     * on the streaming path. Never returns early on client cancellation -- see the 3-arg overload. */
     public Outcome runStreaming(TaskRequest task, Consumer<String> onToken) {
+        return runStreaming(task, onToken, () -> false);
+    }
+
+    /** Streams tokens as they arrive via {@code onToken}; blocks until the response completes or
+     * {@code cancelled} reports {@code true}, then returns the same {@link Outcome} shape as
+     * {@link #run(TaskRequest)}. {@code cancelled} is polled (not interrupt-driven) so a caller such
+     * as the HTTP gateway can signal "the client disconnected" without needing a cooperative
+     * cancellation hook into the underlying provider client -- none of the current model adapters
+     * expose one. On cancellation the in-flight provider call is <em>not</em> aborted; it keeps
+     * running in the background until it completes or the reliability-layer deadline reclaims it.
+     * This bounds how long the caller waits, not how long the provider keeps generating. Tools are
+     * not available on the streaming path. */
+    public Outcome runStreaming(TaskRequest task, Consumer<String> onToken, BooleanSupplier cancelled) {
         Attributes attributes = Attributes.builder().put("gen_ai.operation.name", "chat")
                 .put("castcli.streaming", true).put("castcli.workload", task.workload().name()).build();
         telemetry.request(attributes);
         try (CastTelemetry.SpanScope span = telemetry.span("castcli.request").attributes(attributes)) {
             telemetry.annotatePrompt(span, task.prompt());
             try {
-                Outcome outcome = runStreamingCore(task, onToken);
+                Outcome outcome = runStreamingCore(task, onToken, cancelled);
                 span.attribute("gen_ai.provider.name", outcome.provider().id())
                         .attribute("gen_ai.request.model", outcome.provider().modelName())
                         .attribute("gen_ai.usage.input_tokens", outcome.inputTokens())
@@ -282,17 +296,20 @@ public class HarnessOrchestrator {
         }
     }
 
-    private Outcome runStreamingCore(TaskRequest task, Consumer<String> onToken) {
+    private Outcome runStreamingCore(TaskRequest task, Consumer<String> onToken, BooleanSupplier cancelled) {
         long startTime = System.currentTimeMillis();
         ProviderConfig provider = router.route(task, List.of());
         TaskRequest executionTask = memoryContextProvider == null ? task
                 : new TaskRequest(memoryContextProvider.augment(task.prompt()), task.workload(), task.requestedTier(), task.strict());
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(config.reliability().requestDeadlineSeconds());
         return reliabilityExecutor.execute(provider,
-                () -> streamWithProvider(executionTask, onToken, startTime, provider), false, deadline);
+                () -> streamWithProvider(executionTask, onToken, startTime, provider, cancelled), false, deadline);
     }
 
-    private Outcome streamWithProvider(TaskRequest task, Consumer<String> onToken, long startTime, ProviderConfig provider) {
+    private static final long CANCELLATION_POLL_MILLIS = 200;
+
+    private Outcome streamWithProvider(TaskRequest task, Consumer<String> onToken, long startTime,
+                                        ProviderConfig provider, BooleanSupplier cancelled) {
         try (var span = telemetry.span("gen_ai.chat")
                 .attribute("gen_ai.operation.name", "chat")
                 .attribute("gen_ai.provider.name", provider.id())
@@ -326,11 +343,20 @@ public class HarnessOrchestrator {
             }
         });
 
+        boolean cancelledEarly = false;
         try {
-            latch.await();
+            while (!latch.await(CANCELLATION_POLL_MILLIS, TimeUnit.MILLISECONDS)) {
+                if (cancelled.getAsBoolean()) {
+                    cancelledEarly = true;
+                    break;
+                }
+            }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new RuntimeException("Interrupted while waiting for streamed response", e);
+        }
+        if (cancelledEarly) {
+            span.attribute("castcli.streaming.cancelled", true);
         }
         if (errorHolder[0] != null) {
             throw errorHolder[0];
@@ -344,6 +370,9 @@ public class HarnessOrchestrator {
                 .attribute("gen_ai.usage.output_tokens", outputTokens);
         // Tokens are already delivered live via onToken as they stream; only the aggregated answer
         // recorded in the Outcome (e.g. for memory persistence) can be redacted after the fact.
+        // Client cancellation is treated as a normal return (not a thrown failure) specifically so
+        // ReliabilityExecutor.execute records it as a success rather than dinging provider health --
+        // a user closing their editor mid-stream says nothing about the provider's reliability.
         return new Outcome(provider, GuardrailFilter.filter(answer.toString()), List.of(), List.of(), duration, false, inputTokens, outputTokens, cost);
         }
     }
