@@ -1,0 +1,20 @@
+{
+    "version": "0.1.2",
+    "description": "Java LLM orchestration harness: routes tasks between local Ollama models and frontier cloud models (OpenAI/Anthropic/Gemini) with MCP client/server support, multi-agent pipelines, and durable shared memory.",
+    "homepage": "https://github.com/JustinANelson/CastCLI",
+    "license": "Apache-2.0",
+    "url": "https://github.com/JustinANelson/CastCLI/releases/download/v0.1.2/cast-cli-windows-x64.zip",
+    "hash": "d49508cfa77e1ddda84813626a604d8de82db36fd06a89154487f9b6bbef5261",
+    "extract_dir": "cast-cli",
+    "bin": "cast-cli.exe",
+    "notes": "cast-cli embeds its own Java runtime; no separate JDK/JRE install is required. Run 'cast-cli init' in a project to detect your GPU/VRAM and write a starter .cast\\harness.local.json.",
+    "checkver": {
+        "github": "https://github.com/JustinANelson/CastCLI"
+    },
+    "autoupdate": {
+        "url": "https://github.com/JustinANelson/CastCLI/releases/download/v$version/cast-cli-windows-x64.zip",
+        "hash": {
+            "url": "$url.sha256"
+        }
+    }
+}
