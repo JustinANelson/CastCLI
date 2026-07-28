@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -21,6 +22,11 @@ import java.util.Set;
  * Picks a hardware-appropriate config preset, writes it as the local config, and reports which
  * local models still need to be pulled via Ollama. Best-effort: falls back to a conservative
  * preset whenever hardware can't be detected rather than failing the command.
+ *
+ * <p>Preset JSON is read from the {@code /presets/} classpath resources bundled into the jar by default,
+ * so {@code init} works from any working directory -- including a standalone release/jpackage bundle where
+ * no {@code config/} directory exists on disk. Pass an explicit {@code configDir} (e.g. via
+ * {@code --config-dir}) to read presets from the filesystem instead.
  */
 public final class InitService {
 
@@ -62,6 +68,12 @@ public final class InitService {
 
     private final Path configDir;
 
+    /** Reads presets from the {@code /presets/} classpath resources bundled into the jar. */
+    public InitService() {
+        this.configDir = null;
+    }
+
+    /** Reads presets from {@code configDir} on the filesystem instead of the classpath. */
     public InitService(Path configDir) {
         this.configDir = configDir;
     }
@@ -124,26 +136,43 @@ public final class InitService {
         }
     }
 
-    public Path presetPath(Preset preset) {
-        return configDir.resolve(preset.fileName);
+    /** Raw preset JSON, from {@code configDir} on disk if one was given at construction, otherwise from the
+     * {@code /presets/} classpath resources bundled into the jar. */
+    public String presetJson(Preset preset) throws IOException {
+        if (configDir != null) {
+            Path source = configDir.resolve(preset.fileName);
+            if (!Files.isRegularFile(source)) {
+                throw new IOException("Preset file not found: " + source.toAbsolutePath());
+            }
+            return Files.readString(source, StandardCharsets.UTF_8);
+        }
+        String resource = "/presets/" + preset.fileName;
+        try (InputStream in = InitService.class.getResourceAsStream(resource)) {
+            if (in == null) {
+                throw new IOException("Bundled preset resource not found on classpath: " + resource);
+            }
+            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+        }
     }
 
     /** Writes the chosen preset's raw JSON to {@code target}, creating parent directories as needed. */
     public void writeConfig(Preset preset, Path target) throws IOException {
-        Path source = presetPath(preset);
-        if (!Files.isRegularFile(source)) {
-            throw new IOException("Preset file not found: " + source.toAbsolutePath());
-        }
+        String json = presetJson(preset);
         if (target.getParent() != null) {
             Files.createDirectories(target.getParent());
         }
-        Files.copy(source, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        Files.writeString(target, json, StandardCharsets.UTF_8);
     }
 
     /** Extracts modelName for every enabled provider whose baseUrl looks like a local Ollama endpoint. */
     public List<String> localModelNames(Path configPath) throws IOException {
-        ObjectMapper mapper = new ObjectMapper();
-        JsonNode root = mapper.readTree(Files.readString(configPath, StandardCharsets.UTF_8));
+        return localModelNamesFromJson(Files.readString(configPath, StandardCharsets.UTF_8));
+    }
+
+    /** Same as {@link #localModelNames(Path)} but over raw JSON text, so callers can inspect a preset before
+     * it's been written to disk (e.g. to pick an Ollama base URL ahead of the write). */
+    public List<String> localModelNamesFromJson(String json) throws IOException {
+        JsonNode root = new ObjectMapper().readTree(json);
         List<String> models = new ArrayList<>();
         JsonNode providers = root.path("providers");
         if (providers.isArray()) {
@@ -165,8 +194,12 @@ public final class InitService {
 
     /** Returns the baseUrl of the first enabled local provider, or a sensible Ollama default. */
     public String firstLocalBaseUrl(Path configPath) throws IOException {
-        ObjectMapper mapper = new ObjectMapper();
-        JsonNode root = mapper.readTree(Files.readString(configPath, StandardCharsets.UTF_8));
+        return firstLocalBaseUrlFromJson(Files.readString(configPath, StandardCharsets.UTF_8));
+    }
+
+    /** Same as {@link #firstLocalBaseUrl(Path)} but over raw JSON text. */
+    public String firstLocalBaseUrlFromJson(String json) throws IOException {
+        JsonNode root = new ObjectMapper().readTree(json);
         for (JsonNode provider : root.path("providers")) {
             String baseUrl = provider.path("baseUrl").asText("");
             if (provider.path("enabled").asBoolean(true) && isLocalUrl(baseUrl)) {

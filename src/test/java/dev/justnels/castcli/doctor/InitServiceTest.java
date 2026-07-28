@@ -12,8 +12,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class InitServiceTest {
 
-    private final Path realConfigDir = Path.of("config");
-
     @Test
     void mapsVramToTheClosestPreset() {
         assertThat(InitService.mapVramToPreset(8000)).isEqualTo(InitService.Preset.VRAM_8GB);
@@ -37,7 +35,7 @@ class InitServiceTest {
 
     @Test
     void detectPresetNeverThrowsAndAlwaysReturnsADetail() {
-        InitService service = new InitService(realConfigDir);
+        InitService service = new InitService();
         InitService.DetectionResult result = service.detectPreset();
         assertThat(result.preset()).isNotNull();
         assertThat(result.detectionDetail()).isNotBlank();
@@ -45,7 +43,7 @@ class InitServiceTest {
 
     @Test
     void writesPresetAndListsLocalModelsAndOllamaBaseUrl(@TempDir Path tempDir) throws Exception {
-        InitService service = new InitService(realConfigDir);
+        InitService service = new InitService();
         Path target = tempDir.resolve("harness.local.json");
 
         service.writeConfig(InitService.Preset.VRAM_8GB, target);
@@ -60,14 +58,14 @@ class InitServiceTest {
 
     @Test
     void reportsOllamaUnreachableWhenNothingIsListening() {
-        InitService service = new InitService(realConfigDir);
+        InitService service = new InitService();
         List<String> models = service.probeOllamaModels("http://127.0.0.1:1/v1/");
         assertThat(models).isEmpty();
     }
 
     @Test
     void runProducesAReportEvenWhenOllamaIsUnreachable(@TempDir Path tempDir) throws Exception {
-        InitService service = new InitService(realConfigDir);
+        InitService service = new InitService();
         Path target = tempDir.resolve("harness.local.json");
 
         InitService.InitReport report = service.run(
@@ -85,5 +83,16 @@ class InitServiceTest {
         InitService service = new InitService(tempDir.resolve("no-such-dir"));
         assertThatThrownBy(() -> service.writeConfig(InitService.Preset.VRAM_8GB, tempDir.resolve("out.json")))
                 .isInstanceOf(java.io.IOException.class);
+    }
+
+    @Test
+    void readsPresetsFromFilesystemWhenConfigDirIsGiven(@TempDir Path tempDir) throws Exception {
+        InitService bundled = new InitService();
+        Path copiedPreset = tempDir.resolve(InitService.Preset.VRAM_8GB.fileName);
+        Files.writeString(copiedPreset, bundled.presetJson(InitService.Preset.VRAM_8GB));
+
+        InitService filesystemBacked = new InitService(tempDir);
+        assertThat(filesystemBacked.presetJson(InitService.Preset.VRAM_8GB))
+                .isEqualTo(bundled.presetJson(InitService.Preset.VRAM_8GB));
     }
 }

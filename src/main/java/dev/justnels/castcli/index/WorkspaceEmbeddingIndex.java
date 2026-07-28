@@ -30,6 +30,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Stream;
 
 /**
@@ -52,6 +53,13 @@ public final class WorkspaceEmbeddingIndex {
     private final Path indexFile;
     private final EmbeddingModel embeddingModel;
     private volatile Embedding cachedZeroEmbedding;
+    private final ExecutorService backgroundRebuildExecutor =
+            Executors.newSingleThreadExecutor(r -> {
+                Thread t = new Thread(r, "workspace-index-background-rebuild");
+                t.setDaemon(true);
+                return t;
+            });
+    private final AtomicBoolean backgroundRebuildInProgress = new AtomicBoolean(false);
 
     public WorkspaceEmbeddingIndex(EmbeddingConfig config, Path workspaceRoot, EmbeddingModel embeddingModel) {
         this.config = config;
@@ -203,8 +211,12 @@ public final class WorkspaceEmbeddingIndex {
                 .toList();
     }
 
-    /** Semantically searches the persisted index; if no index file exists yet, automatically performs an
-     * incremental rebuild first before performing the search. */
+    /** Semantically searches the persisted index. If no index file exists yet, performs a synchronous
+     * incremental rebuild first (there's nothing to search otherwise). If an index already exists but looks
+     * stale (some included file was modified after the index was last written), the search is served
+     * immediately against the existing index while a rebuild is kicked off on a background thread -- so a
+     * search never blocks on an unbounded embedding pass over a large batch of changed files. Results may
+     * therefore lag behind disk by one rebuild; subsequent calls pick up the refreshed index once it lands. */
     public List<SearchHit> searchOrAutoRebuild(String query, int maxResults) {
         if (!Files.isRegularFile(indexFile)) {
             try {
@@ -212,8 +224,45 @@ public final class WorkspaceEmbeddingIndex {
             } catch (IOException e) {
                 throw new IllegalStateException("Auto-rebuilding index failed: " + e.getMessage(), e);
             }
+        } else {
+            triggerBackgroundRebuildIfStale();
         }
         return search(query, maxResults);
+    }
+
+    /** Kicks off an incremental {@link #rebuild()} on a background thread if the index looks stale, unless a
+     * background rebuild is already running (in which case this is a no-op -- the running rebuild will pick
+     * up whatever is on disk when it starts scanning). */
+    private void triggerBackgroundRebuildIfStale() {
+        if (!isStale() || !backgroundRebuildInProgress.compareAndSet(false, true)) {
+            return;
+        }
+        backgroundRebuildExecutor.submit(() -> {
+            try {
+                rebuild();
+            } catch (IOException | RuntimeException e) {
+                System.err.println("Background workspace index rebuild failed: " + e.getMessage());
+            } finally {
+                backgroundRebuildInProgress.set(false);
+            }
+        });
+    }
+
+    /** Cheap staleness check: walks included files and compares their mtimes against the index file's mtime,
+     * without reading file contents. This is the same file set {@link #rebuild()} would scan, but skipping
+     * the read+hash+embed cost makes it safe to call on every search. */
+    private boolean isStale() {
+        try {
+            long indexModified = Files.getLastModifiedTime(indexFile).toMillis();
+            for (Path file : collectIncludedFiles()) {
+                if (Files.getLastModifiedTime(file).toMillis() > indexModified) {
+                    return true;
+                }
+            }
+            return false;
+        } catch (IOException e) {
+            return false;
+        }
     }
 
 

@@ -21,8 +21,10 @@ LangChain4j supplies the chat and function-calling API; Jackson loads configurat
 `cast-cli-macos-arm64.zip`, or `cast-cli-macos-x64.zip`) and unzip it — each bundle embeds its
 own Java runtime. With
 [Ollama](https://ollama.com) installed and running, `init` detects your hardware (VRAM on
-Windows/Linux with an NVIDIA GPU, or Apple Silicon) and writes a matching starter config instead of
-you hand-picking one of the `config/harness.vram-*.json` presets:
+Windows/Linux with an NVIDIA GPU, or Apple Silicon) and writes a matching starter config (bundled
+in the jar, so this works from the standalone release zip too) instead of you hand-picking a preset.
+Even without running `init` yourself, any command auto-creates `.cast/harness.local.json` the first
+time it can't find a config, using the same detection logic:
 
 ```powershell
 ./cast-cli.exe init
@@ -197,11 +199,12 @@ The harness can also act as an MCP *client*: list stdio MCP servers under `mcpSe
    ```powershell
    ./gradlew.bat installDist
    ```
-2. Register the built launcher as a stdio MCP server, pointing `--config` at your own local config:
+2. Register the built launcher as a stdio MCP server, pointing `--config` at your own local config
+   (or omit `--config` entirely -- the default `.cast/harness.local.json` is auto-created on first run):
    ```powershell
    claude mcp add cast-cli -- `
      "C:\path\to\CastCLI\build\install\cast-cli\bin\cast-cli.bat" `
-     --config "C:\path\to\CastCLI\config\harness.local.json" mcp-serve
+     --config "C:\path\to\CastCLI\.cast\harness.local.json" mcp-serve
    ```
    (On macOS/Linux, use the `bin/cast-cli` shell script instead of the `.bat`.)
 3. Confirm it's attached:

@@ -52,4 +52,21 @@ class CastCliTest {
 
         assertThat(resolved).isEqualTo(absolute);
     }
+
+    @Test
+    void bootstrapAnchorFindsTheNearestAncestorGitDirectory(@TempDir Path root) throws Exception {
+        Files.createDirectories(root.resolve(".git"));
+        Path nested = Files.createDirectories(root.resolve("src").resolve("main"));
+
+        Path anchor = CastCli.resolveBootstrapAnchor(nested);
+
+        assertThat(anchor).isEqualTo(root);
+    }
+
+    @Test
+    void bootstrapAnchorFallsBackToStartDirWhenNoGitDirectoryIsFound(@TempDir Path root) {
+        Path anchor = CastCli.resolveBootstrapAnchor(root);
+
+        assertThat(anchor).isEqualTo(root);
+    }
 }

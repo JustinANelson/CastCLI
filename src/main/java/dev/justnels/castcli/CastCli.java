@@ -45,6 +45,7 @@ import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
 
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.concurrent.Callable;
@@ -60,8 +61,11 @@ import java.util.concurrent.Callable;
                 CastCli.Completion.class, CastCli.ConfigCmd.class, CastCli.Init.class})
 public final class CastCli implements Runnable {
     @Option(names = "--config", description = "Path to CastCLI JSON configuration.",
-            defaultValue = "config/harness.local.json")
+            defaultValue = ".cast/harness.local.json")
     private Path configPath;
+
+    @CommandLine.Spec
+    private CommandLine.Model.CommandSpec spec;
 
     static final class VersionProvider implements CommandLine.IVersionProvider {
         @Override public String[] getVersion() {
@@ -95,12 +99,43 @@ public final class CastCli implements Runnable {
     }
 
     HarnessConfig loadConfig() throws Exception {
-        configPath = resolveConfigPath(configPath);
+        Path resolved = resolveConfigPath(configPath);
+        if (!Files.isRegularFile(resolved) && !isConfigPathExplicit()) {
+            resolved = autoBootstrapConfig();
+        }
+        configPath = resolved;
         HarnessConfig config = new ConfigLoader().load(configPath);
         CastTelemetry.initialize(config.observability(),
                 Path.of(config.tools().workspaceRoot()).toAbsolutePath().normalize());
         dev.justnels.castcli.lifecycle.ShutdownHookManager.getInstance().register(CastTelemetry.current());
         return config;
+    }
+
+    /** True only when the user typed {@code --config} themselves, as opposed to the option's default value
+     * applying. Auto-bootstrap must never fire for a path the user explicitly named (and possibly typo'd) --
+     * a missing explicit path should keep failing with a clear "not found" error instead. */
+    private boolean isConfigPathExplicit() {
+        return !spec.findOption("--config").originalStringValues().isEmpty();
+    }
+
+    /** Silently writes a starter {@code .cast/harness.local.json} the first time cast-cli is run in a
+     * project with no config yet, using the same hardware-detection preset logic as {@code cast-cli init}.
+     * Anchored at the nearest ancestor {@code .git} directory (falling back to the current directory) so
+     * repeated invocations from different subdirectories converge on the same file instead of scattering a
+     * {@code .cast/} per subdirectory. All messaging goes to stderr: stdout is the MCP wire protocol for
+     * {@code mcp-serve}, and writing anything else to it breaks that connection. */
+    private Path autoBootstrapConfig() throws IOException {
+        Path anchor = resolveBootstrapAnchor(Path.of("").toAbsolutePath());
+        Path target = anchor.resolve(".cast").resolve("harness.local.json");
+
+        InitService init = new InitService();
+        InitService.DetectionResult detected = init.detectPreset();
+        init.writeConfig(detected.preset(), target);
+
+        System.err.println("cast-cli: no config found; auto-created " + target.toAbsolutePath()
+                + " (" + detected.preset().label + " preset -- " + detected.detectionDetail() + "). "
+                + "Run 'cast-cli init --preset <id> --force' to redo detection, or edit the file directly.");
+        return target;
     }
 
     private static final int CONFIG_SEARCH_MAX_DEPTH = 8;
@@ -124,6 +159,19 @@ public final class CastCli implements Runnable {
             }
         }
         return configPath;
+    }
+
+    /** Finds the nearest ancestor directory containing {@code .git}, so auto-bootstrapped config always
+     * lands at the project root regardless of which subdirectory cast-cli was invoked from. Falls back to
+     * {@code startDir} itself when no repo root is found. */
+    static Path resolveBootstrapAnchor(Path startDir) {
+        Path dir = startDir;
+        for (int i = 0; i < CONFIG_SEARCH_MAX_DEPTH && dir != null; i++, dir = dir.getParent()) {
+            if (Files.isDirectory(dir.resolve(".git"))) {
+                return dir;
+            }
+        }
+        return startDir;
     }
 
     @Command(name = "telemetry", description = "Show observability configuration and optionally flush pending exports.",
@@ -193,8 +241,9 @@ public final class CastCli implements Runnable {
         @Option(names = "--force", description = "Overwrite the target config file if it already exists.")
         private boolean force;
 
-        @Option(names = "--config-dir", description = "Directory containing the harness.vram-*.json presets.",
-                defaultValue = "config")
+        @Option(names = "--config-dir",
+                description = "Directory containing harness.vram-*.json presets, overriding the presets "
+                        + "bundled in the jar.")
         private Path configDir;
 
         @Override public Integer call() throws Exception {
@@ -205,7 +254,7 @@ public final class CastCli implements Runnable {
                 return 1;
             }
 
-            InitService init = new InitService(configDir);
+            InitService init = configDir != null ? new InitService(configDir) : new InitService();
             InitService.Preset preset;
             String detectionDetail;
             if (presetId != null && !presetId.isBlank()) {
@@ -225,7 +274,8 @@ public final class CastCli implements Runnable {
             System.out.println("Hardware: " + detectionDetail);
             System.out.println("Preset:   " + preset.label + " (" + preset.fileName + ")");
 
-            InitService.InitReport report = init.run(preset, detectionDetail, target, init.firstLocalBaseUrl(init.presetPath(preset)));
+            InitService.InitReport report = init.run(preset, detectionDetail, target,
+                    init.firstLocalBaseUrlFromJson(init.presetJson(preset)));
 
             System.out.println("Wrote:    " + report.writtenConfigPath().toAbsolutePath());
             System.out.println();
