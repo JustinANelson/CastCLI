@@ -40,3 +40,13 @@ tool behavior.
 
 For verification, run cast-cli mcp-usage --fail-if-unused (or the equivalent Gradle command documented in
 docs/CODEX_MCP.md). Use fresh, equivalent Codex sessions for A/B token comparisons.
+
+# Persistent work checklist
+
+Always maintain a persistent checklist in `docs/WORK_CHECKLIST.md` so another LLM or a later turn can resume
+the work without reconstructing prior context. Create the file if it does not exist, update it at the start of
+each work turn, and update it again before ending the turn. Use Markdown checkboxes and record the current
+objective, completed work, remaining steps, blockers or open decisions, and the next concrete action. Include
+relevant file paths and verification commands or results. Keep the checklist accurate: mark an item complete
+only after it has been implemented and verified, and remove or archive stale entries that no longer help with
+resumption.

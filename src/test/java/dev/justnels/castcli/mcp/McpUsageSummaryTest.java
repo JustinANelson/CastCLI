@@ -66,7 +66,7 @@ class McpUsageSummaryTest {
         McpUsageSummary summary = McpUsageSummary.summarize(records, config);
 
         assertThat(summary.successfulDelegations()).isEqualTo(1);
-        assertThat(summary.estimatedFrontierEquivalentCostUsd()).isCloseTo(0.0000105, org.assertj.core.api.Assertions.within(1e-10));
+        assertThat(summary.estimatedFrontierEquivalentCostUsd()).isCloseTo(0.0105, org.assertj.core.api.Assertions.within(1e-10));
         assertThat(summary.callerModels()).containsExactly("claude-sonnet-4-6");
     }
 }

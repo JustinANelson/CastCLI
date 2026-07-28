@@ -366,13 +366,12 @@ public final class CastCli implements Runnable {
                 }
                 System.out.println(output.toPrettyString());
             } else {
-                printMcpUsage(store, summary, codexTokenSavings);
+                printMcpUsage(store, summary, config, codexTokenSavings);
             }
             return failIfUnused && summary.successfulDelegations() == 0 ? 1 : 0;
         }
 
-        private void printMcpUsage(McpUsageStore store, McpUsageSummary summary, Long codexTokenSavings) {
-            HarnessConfig config = parent.loadConfig();
+        private void printMcpUsage(McpUsageStore store, McpUsageSummary summary, HarnessConfig config, Long codexTokenSavings) {
             CostSavingsEstimator estimator = new CostSavingsEstimator(config);
             System.out.println("MCP usage audit: " + store.path());
             System.out.printf("Calls: %d total / %d successful; delegations: %d attempts / %d successful (%.1f%%); ask_local: %d%n",
