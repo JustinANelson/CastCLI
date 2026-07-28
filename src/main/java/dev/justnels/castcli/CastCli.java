@@ -278,6 +278,14 @@ public final class CastCli implements Runnable {
                     init.firstLocalBaseUrlFromJson(init.presetJson(preset)));
 
             System.out.println("Wrote:    " + report.writtenConfigPath().toAbsolutePath());
+
+            if (!report.substitutedModels().isEmpty()) {
+                System.out.println();
+                System.out.println("Using models you already have instead of the preset defaults:");
+                for (var substitution : report.substitutedModels().entrySet()) {
+                    System.out.println("  " + substitution.getKey() + " -> " + substitution.getValue());
+                }
+            }
             System.out.println();
 
             if (!report.ollamaReachable()) {

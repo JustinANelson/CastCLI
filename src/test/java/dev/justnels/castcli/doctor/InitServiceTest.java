@@ -1,11 +1,15 @@
 package dev.justnels.castcli.doctor;
 
+import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -86,6 +90,23 @@ class InitServiceTest {
     }
 
     @Test
+    void firstLocalBaseUrlFromJsonExpandsTheTemplatedPlaceholderInRawPresetJson() throws Exception {
+        // Regression test: preset JSON keeps baseUrl as an unexpanded "${VAR:default}" template on disk
+        // (only ConfigLoader normally expands it, when loading an already-written config). init's
+        // pre-write reachability probe reads the raw preset directly, so without expansion here it hands
+        // a literal "${OLLAMA_BASE_URL:...}" string to java.net.URI, which throws -- silently reported as
+        // "Ollama unreachable" regardless of whether Ollama is actually running.
+        InitService service = new InitService();
+        String rawPresetJson = service.presetJson(InitService.Preset.VRAM_8GB);
+        assertThat(rawPresetJson).contains("${OLLAMA_BASE_URL:");
+
+        String baseUrl = service.firstLocalBaseUrlFromJson(rawPresetJson);
+
+        assertThat(baseUrl).doesNotContain("${", "}");
+        assertThat(java.net.URI.create(baseUrl)).isNotNull();
+    }
+
+    @Test
     void readsPresetsFromFilesystemWhenConfigDirIsGiven(@TempDir Path tempDir) throws Exception {
         InitService bundled = new InitService();
         Path copiedPreset = tempDir.resolve(InitService.Preset.VRAM_8GB.fileName);
@@ -94,5 +115,73 @@ class InitServiceTest {
         InitService filesystemBacked = new InitService(tempDir);
         assertThat(filesystemBacked.presetJson(InitService.Preset.VRAM_8GB))
                 .isEqualTo(bundled.presetJson(InitService.Preset.VRAM_8GB));
+    }
+
+    @Test
+    void familyKeyIgnoresQuantizationAndInstructSuffixes() {
+        assertThat(InitService.modelFamilyKey("qwen2.5-coder:7b-instruct-q4_K_M"))
+                .isEqualTo(InitService.modelFamilyKey("qwen2.5-coder:7b"))
+                .isEqualTo(InitService.modelFamilyKey("qwen2.5-coder:7b-instruct-q8_0"))
+                .isEqualTo("qwen2.5-coder:7b");
+    }
+
+    @Test
+    void familyKeyDistinguishesDifferentSizesOfTheSameFamily() {
+        assertThat(InitService.modelFamilyKey("qwen2.5-coder:7b"))
+                .isNotEqualTo(InitService.modelFamilyKey("qwen2.5-coder:32b-instruct-q4_K_M"));
+    }
+
+    @Test
+    void resolvesSubstitutionsOnlyForRequiredModelsWithAFamilyMatchAndNoExactInstall() {
+        Map<String, String> substitutions = InitService.resolveAcceptableSubstitutions(
+                List.of("qwen2.5-coder:7b-instruct-q4_K_M", "deepseek-r1:8b", "gpt-4o"),
+                List.of("qwen2.5-coder:7b", "gemma4:12b"));
+
+        // family+size match, not an exact install -> substituted
+        assertThat(substitutions).containsEntry("qwen2.5-coder:7b-instruct-q4_K_M", "qwen2.5-coder:7b");
+        // no installed model shares deepseek-r1's family -> left for the user to pull
+        assertThat(substitutions).doesNotContainKey("deepseek-r1:8b");
+        // frontier/cloud model, never a candidate for a local substitution
+        assertThat(substitutions).doesNotContainKey("gpt-4o");
+    }
+
+    @Test
+    void resolvesNoSubstitutionWhenTheExactTagIsAlreadyInstalled() {
+        Map<String, String> substitutions = InitService.resolveAcceptableSubstitutions(
+                List.of("qwen2.5-coder:7b-instruct-q4_K_M"),
+                List.of("qwen2.5-coder:7b-instruct-q4_K_M"));
+
+        assertThat(substitutions).isEmpty();
+    }
+
+    @Test
+    void runSubstitutesAnAlreadyInstalledCompatibleModelIntoTheWrittenConfig(@TempDir Path tempDir) throws Exception {
+        // Simulates Ollama's /api/tags reporting "qwen2.5-coder:7b" and "gemma4:12b" installed, neither of
+        // which exactly matches the 8GB preset's "qwen2.5-coder:7b-instruct-q4_K_M" / "deepseek-r1:8b", but
+        // the qwen tag is an acceptable family+size stand-in for the SMALL_LOCAL tier.
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/api/tags", exchange -> {
+            String body = "{\"models\":[{\"name\":\"qwen2.5-coder:7b\"},{\"name\":\"gemma4:12b\"}]}";
+            byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, bytes.length);
+            exchange.getResponseBody().write(bytes);
+            exchange.close();
+        });
+        server.start();
+        try {
+            String baseUrl = "http://127.0.0.1:" + server.getAddress().getPort() + "/v1/";
+            InitService service = new InitService();
+            Path target = tempDir.resolve("harness.local.json");
+
+            InitService.InitReport report = service.run(InitService.Preset.VRAM_8GB, "forced for test", target, baseUrl);
+
+            assertThat(report.substitutedModels())
+                    .containsEntry("qwen2.5-coder:7b-instruct-q4_K_M", "qwen2.5-coder:7b");
+            assertThat(report.requiredLocalModels()).contains("qwen2.5-coder:7b");
+            assertThat(report.missingModels()).containsExactly("deepseek-r1:8b");
+            assertThat(service.localModelNames(target)).contains("qwen2.5-coder:7b");
+        } finally {
+            server.stop(0);
+        }
     }
 }

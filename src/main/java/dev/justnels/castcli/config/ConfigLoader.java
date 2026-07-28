@@ -28,8 +28,11 @@ public final class ConfigLoader {
     }
 
     /** Real process environment variables, overlaid on top of any {@code .env} file in the working
-     * directory -- a real environment variable always wins over a same-named {@code .env} entry. */
-    private static Map<String, String> effectiveEnvironment() {
+     * directory -- a real environment variable always wins over a same-named {@code .env} entry. Public so
+     * other code that must resolve {@code ${VAR:default}} placeholders outside of a full config load (e.g.
+     * {@link dev.justnels.castcli.doctor.InitService} probing a preset's baseUrl before it's written) uses
+     * the same resolution rules as an actual load. */
+    public static Map<String, String> effectiveEnvironment() {
         Map<String, String> merged = new HashMap<>(new DotenvSecretResolver(Path.of(".env")).entries());
         merged.putAll(System.getenv());
         return merged;

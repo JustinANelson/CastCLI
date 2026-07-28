@@ -12,7 +12,6 @@ import dev.justnels.castcli.memory.SqliteMemoryMigrator;
 import java.io.File;
 import java.net.URI;
 import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -115,12 +114,8 @@ public final class DoctorService {
             String baseUrl = provider.baseUrl();
             if (baseUrl != null && !baseUrl.isBlank() && (baseUrl.startsWith("http://") || baseUrl.startsWith("https://"))) {
                 try {
-                    HttpRequest req = HttpRequest.newBuilder()
-                            .uri(URI.create(baseUrl))
-                            .timeout(Duration.ofSeconds(2))
-                            .GET()
-                            .build();
-                    HttpResponse<Void> resp = httpClient.send(req, HttpResponse.BodyHandlers.discarding());
+                    HttpResponse<Void> resp = OllamaProbe.getWithRetry(httpClient, URI.create(baseUrl),
+                            Duration.ofSeconds(2), HttpResponse.BodyHandlers.discarding());
                     results.add(new CheckResult("Providers", provider.id() + " Endpoint", Status.OK,
                             "Reachable at " + baseUrl + " (HTTP " + resp.statusCode() + ")"));
                 } catch (Exception e) {
@@ -246,9 +241,8 @@ public final class DoctorService {
         String tagsUrl = ollamaBaseUrl.replaceAll("/v1/?$", "") + "/api/tags";
         try {
             HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build();
-            HttpRequest request = HttpRequest.newBuilder(URI.create(tagsUrl))
-                    .timeout(Duration.ofSeconds(3)).GET().build();
-            HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+            HttpResponse<String> response = OllamaProbe.getWithRetry(
+                    client, URI.create(tagsUrl), Duration.ofSeconds(3), HttpResponse.BodyHandlers.ofString());
             if (response.statusCode() != 200) {
                 return List.of();
             }

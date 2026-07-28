@@ -2,12 +2,12 @@ package dev.justnels.castcli.doctor;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import dev.justnels.castcli.config.ConfigLoader;
 
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -15,7 +15,10 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -63,7 +66,8 @@ public final class InitService {
 
     public record InitReport(Preset preset, String detectionDetail, Path writtenConfigPath,
                               boolean ollamaReachable, List<String> requiredLocalModels,
-                              List<String> installedModels, List<String> missingModels) {
+                              List<String> installedModels, List<String> missingModels,
+                              Map<String, String> substitutedModels) {
     }
 
     private final Path configDir;
@@ -197,9 +201,15 @@ public final class InitService {
         return firstLocalBaseUrlFromJson(Files.readString(configPath, StandardCharsets.UTF_8));
     }
 
-    /** Same as {@link #firstLocalBaseUrl(Path)} but over raw JSON text. */
+    /** Same as {@link #firstLocalBaseUrl(Path)} but over raw JSON text. Expands {@code ${VAR:default}}
+     * placeholders first -- preset JSON keeps {@code baseUrl} templated on disk (e.g.
+     * {@code ${OLLAMA_BASE_URL:http://localhost:11434/v1/}}), only ever resolved by {@link ConfigLoader}
+     * when a config is actually loaded. Without this, probing reachability against a still-templated
+     * string throws inside {@link URI#create}, gets swallowed by the caller's try/catch, and reports
+     * "unreachable" even when Ollama is up. */
     public String firstLocalBaseUrlFromJson(String json) throws IOException {
-        JsonNode root = new ObjectMapper().readTree(json);
+        String expanded = ConfigLoader.expandEnvironmentVariables(json, ConfigLoader.effectiveEnvironment());
+        JsonNode root = new ObjectMapper().readTree(expanded);
         for (JsonNode provider : root.path("providers")) {
             String baseUrl = provider.path("baseUrl").asText("");
             if (provider.path("enabled").asBoolean(true) && isLocalUrl(baseUrl)) {
@@ -214,9 +224,8 @@ public final class InitService {
         String tagsUrl = ollamaBaseUrl.replaceAll("/v1/?$", "") + "/api/tags";
         try {
             HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build();
-            HttpRequest request = HttpRequest.newBuilder(URI.create(tagsUrl))
-                    .timeout(Duration.ofSeconds(3)).GET().build();
-            HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+            HttpResponse<String> response = OllamaProbe.getWithRetry(
+                    client, URI.create(tagsUrl), Duration.ofSeconds(3), HttpResponse.BodyHandlers.ofString());
             if (response.statusCode() != 200) {
                 return List.of();
             }
@@ -237,21 +246,79 @@ public final class InitService {
         writeConfig(preset, target);
         List<String> required = localModelNames(target);
         List<String> installed = probeOllamaModels(ollamaBaseUrl);
+
+        Map<String, String> substitutions = resolveAcceptableSubstitutions(required, installed);
+        if (!substitutions.isEmpty()) {
+            applySubstitutions(target, substitutions);
+            required = localModelNames(target);
+        }
+
         boolean reachable = !installed.isEmpty() || probeOllamaAlive(ollamaBaseUrl);
         Set<String> installedSet = new HashSet<>(installed);
         List<String> missing = new ArrayList<>();
         for (String model : required) {
             if (!installedSet.contains(model)) missing.add(model);
         }
-        return new InitReport(preset, detectionDetail, target, reachable, required, installed, missing);
+        return new InitReport(preset, detectionDetail, target, reachable, required, installed, missing, substitutions);
+    }
+
+    /** Maps each required model whose exact tag isn't installed to an already-installed tag that's an
+     * acceptable stand-in -- same base family and parameter size, regardless of quantization/instruct
+     * suffix (e.g. "qwen2.5-coder:7b-instruct-q4_K_M" required, "qwen2.5-coder:7b" installed). This is what
+     * lets every preset accept the same set of comparable models rather than forcing one exact tag per
+     * tier: whichever variant of a family+size you already have satisfies any preset asking for that tier.
+     * Required models with an exact installed match, or no installed match at all, are left out. */
+    static Map<String, String> resolveAcceptableSubstitutions(List<String> required, List<String> installed) {
+        Set<String> installedSet = new LinkedHashSet<>(installed);
+        Map<String, String> installedByFamilyKey = new LinkedHashMap<>();
+        for (String tag : installed) {
+            installedByFamilyKey.putIfAbsent(modelFamilyKey(tag), tag);
+        }
+
+        Map<String, String> substitutions = new LinkedHashMap<>();
+        for (String requiredTag : required) {
+            if (installedSet.contains(requiredTag)) continue;
+            String replacement = installedByFamilyKey.get(modelFamilyKey(requiredTag));
+            if (replacement != null) {
+                substitutions.put(requiredTag, replacement);
+            }
+        }
+        return substitutions;
+    }
+
+    /** The "family:size" a model tag is grouped under for substitution purposes, e.g. both
+     * "qwen2.5-coder:7b-instruct-q4_K_M" and "qwen2.5-coder:7b" reduce to "qwen2.5-coder:7b" -- everything
+     * in the colon-separated tag after the leading size token (quantization, "-instruct", etc.) is
+     * considered an interchangeable variant of the same model for reachability/init purposes. */
+    static String modelFamilyKey(String modelTag) {
+        int colon = modelTag.indexOf(':');
+        if (colon < 0) return modelTag;
+        String family = modelTag.substring(0, colon);
+        String rest = modelTag.substring(colon + 1);
+        int dash = rest.indexOf('-');
+        String size = dash < 0 ? rest : rest.substring(0, dash);
+        return family + ":" + size;
+    }
+
+    /** Rewrites {@code target}'s {@code modelName} fields per {@code substitutions}. A plain literal
+     * replace of {@code "modelName": "<old>"} is safe here: the old value came verbatim from the file we're
+     * about to edit (via {@link #localModelNames}), and the trailing quote in the search string means a
+     * longer tag sharing a prefix (e.g. "...7b" vs "...7b-instruct-q4_K_M") can never partially match. */
+    private void applySubstitutions(Path target, Map<String, String> substitutions) throws IOException {
+        String content = Files.readString(target, StandardCharsets.UTF_8);
+        for (Map.Entry<String, String> substitution : substitutions.entrySet()) {
+            content = content.replace(
+                    "\"modelName\": \"" + substitution.getKey() + "\"",
+                    "\"modelName\": \"" + substitution.getValue() + "\"");
+        }
+        Files.writeString(target, content, StandardCharsets.UTF_8);
     }
 
     private boolean probeOllamaAlive(String ollamaBaseUrl) {
         try {
             HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build();
-            HttpRequest request = HttpRequest.newBuilder(URI.create(ollamaBaseUrl))
-                    .timeout(Duration.ofSeconds(2)).GET().build();
-            HttpResponse<Void> response = client.send(request, HttpResponse.BodyHandlers.discarding());
+            HttpResponse<Void> response = OllamaProbe.getWithRetry(
+                    client, URI.create(ollamaBaseUrl), Duration.ofSeconds(2), HttpResponse.BodyHandlers.discarding());
             return response.statusCode() < 500;
         } catch (Exception e) {
             return false;
