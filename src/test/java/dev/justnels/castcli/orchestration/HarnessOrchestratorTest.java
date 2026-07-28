@@ -11,6 +11,8 @@ import dev.justnels.castcli.tools.AutoApprovalGate;
 import dev.justnels.castcli.tools.DefaultToolSelector;
 import dev.justnels.castcli.tools.FastPathExecutor;
 import dev.langchain4j.data.message.AiMessage;
+import dev.langchain4j.data.message.ChatMessage;
+import dev.langchain4j.data.message.SystemMessage;
 import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.chat.request.ChatRequest;
 import dev.langchain4j.model.chat.response.ChatResponse;
@@ -95,6 +97,28 @@ class HarnessOrchestratorTest {
         assertThatThrownBy(() -> orchestrator.run(new TaskRequest(
                 "search the repository for this class", Workload.CODE, null))).isInstanceOf(RuntimeException.class);
         assertThat(calls).containsExactly("large");
+    }
+
+    @Test
+    void toolBearingRequestPrependsFlattenedHistoryInsteadOfDroppingIt() {
+        List<String> capturedMessageText = new CopyOnWriteArrayList<>();
+        ChatModelFactory factory = new ChatModelFactory() {
+            @Override public ChatModel create(ProviderConfig provider) {
+                return new ChatModel() {
+                    @Override public ChatResponse doChat(ChatRequest request) {
+                        request.messages().forEach(m -> capturedMessageText.add(m.toString()));
+                        return ChatResponse.builder().aiMessage(AiMessage.from("no tools needed, here's the answer")).build();
+                    }
+                };
+            }
+        };
+        HarnessOrchestrator orchestrator = new HarnessOrchestrator(config, factory,
+                new DefaultToolSelector(), new FastPathExecutor(), AutoApprovalGate.INSTANCE, null);
+        List<ChatMessage> history = List.of(SystemMessage.from("remember the ticket ID is T-42"));
+
+        orchestrator.run(new TaskRequest("search the repository for the ticket validation code", Workload.CODE, null), history);
+
+        assertThat(capturedMessageText).anySatisfy(text -> assertThat(text).contains("T-42"));
     }
 
     @Test

@@ -25,6 +25,8 @@ import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.agent.tool.ToolSpecification;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.message.ChatMessage;
+import dev.langchain4j.data.message.SystemMessage;
+import dev.langchain4j.data.message.ToolExecutionResultMessage;
 import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.chat.StreamingChatModel;
@@ -186,6 +188,19 @@ public class HarnessOrchestrator {
     }
 
     public Outcome run(TaskRequest task) {
+        return run(task, List.of());
+    }
+
+    /**
+     * Runs a chat turn, prepending {@code history} (prior turns, e.g. a system prompt and earlier
+     * user/assistant messages) before the current turn built from {@code task.prompt()}. Passing
+     * real {@link ChatMessage}s instead of flattening history into the prompt string preserves role
+     * boundaries the model can actually use (a {@code SystemMessage} behaves differently from a user
+     * message containing the literal text "system: ..."). {@code task.prompt()} remains the single
+     * source of truth for fastPath/tool-selection heuristics, routing signals, memory augmentation,
+     * and telemetry -- it is always the current turn, never the whole conversation.
+     */
+    public Outcome run(TaskRequest task, List<ChatMessage> history) {
         Attributes requestAttributes = Attributes.builder()
                 .put("gen_ai.operation.name", "chat")
                 .put("castcli.workload", task.workload().name())
@@ -195,7 +210,7 @@ public class HarnessOrchestrator {
         try (CastTelemetry.SpanScope span = telemetry.span("castcli.request").attributes(requestAttributes)) {
             telemetry.annotatePrompt(span, task.prompt());
             try {
-                Outcome outcome = runCore(task);
+                Outcome outcome = runCore(task, history);
                 span.attribute("gen_ai.provider.name", outcome.provider().id())
                         .attribute("gen_ai.request.model", outcome.provider().modelName())
                         .attribute("gen_ai.usage.input_tokens", outcome.inputTokens())
@@ -330,7 +345,7 @@ public class HarnessOrchestrator {
         };
     }
 
-    private Outcome runCore(TaskRequest task) {
+    private Outcome runCore(TaskRequest task, List<ChatMessage> history) {
         long startTime = System.currentTimeMillis();
 
         var fastPathResult = fastPathExecutor.executeIfPossible(task, config.tools());
@@ -377,7 +392,7 @@ public class HarnessOrchestrator {
             try {
                 boolean retrySafe = selectedTools.isEmpty();
                 return reliabilityExecutor.execute(provider,
-                        () -> executeWithProvider(executionTask, provider, selectedTools, selectedToolNames, startTime),
+                        () -> executeWithProvider(executionTask, provider, selectedTools, selectedToolNames, startTime, history),
                         retrySafe, deadline);
             } catch (RuntimeException failure) {
                 if (firstFailure == null) firstFailure = failure;
@@ -413,23 +428,18 @@ public class HarnessOrchestrator {
         return runStreaming(task, onToken, () -> false);
     }
 
-    /** Streams tokens as they arrive via {@code onToken}; blocks until the response completes or
-     * {@code cancelled} reports {@code true}, then returns the same {@link Outcome} shape as
-     * {@link #run(TaskRequest)}. {@code cancelled} is polled (not interrupt-driven) so a caller such
-     * as the HTTP gateway can signal "the client disconnected" without needing a cooperative
-     * cancellation hook into the underlying provider client -- none of the current model adapters
-     * expose one. On cancellation the in-flight provider call is <em>not</em> aborted; it keeps
-     * running in the background until it completes or the reliability-layer deadline reclaims it.
-     * This bounds how long the caller waits, not how long the provider keeps generating. Tools are
-     * not available on the streaming path. */
-    public Outcome runStreaming(TaskRequest task, Consumer<String> onToken, BooleanSupplier cancelled) {
+    /** As {@link #runStreaming(TaskRequest, Consumer, BooleanSupplier)}, but prepends {@code history}
+     * before the current turn, the same way {@link #run(TaskRequest, List)} does for the non-streaming
+     * path. */
+    public Outcome runStreaming(TaskRequest task, Consumer<String> onToken, BooleanSupplier cancelled,
+                                  List<ChatMessage> history) {
         Attributes attributes = Attributes.builder().put("gen_ai.operation.name", "chat")
                 .put("castcli.streaming", true).put("castcli.workload", task.workload().name()).build();
         telemetry.request(attributes);
         try (CastTelemetry.SpanScope span = telemetry.span("castcli.request").attributes(attributes)) {
             telemetry.annotatePrompt(span, task.prompt());
             try {
-                Outcome outcome = runStreamingCore(task, onToken, cancelled);
+                Outcome outcome = runStreamingCore(task, onToken, cancelled, history);
                 span.attribute("gen_ai.provider.name", outcome.provider().id())
                         .attribute("gen_ai.request.model", outcome.provider().modelName())
                         .attribute("gen_ai.usage.input_tokens", outcome.inputTokens())
@@ -443,20 +453,34 @@ public class HarnessOrchestrator {
         }
     }
 
-    private Outcome runStreamingCore(TaskRequest task, Consumer<String> onToken, BooleanSupplier cancelled) {
+    /** Streams tokens as they arrive via {@code onToken}; blocks until the response completes or
+     * {@code cancelled} reports {@code true}, then returns the same {@link Outcome} shape as
+     * {@link #run(TaskRequest)}. {@code cancelled} is polled (not interrupt-driven) so a caller such
+     * as the HTTP gateway can signal "the client disconnected" without needing a cooperative
+     * cancellation hook into the underlying provider client -- none of the current model adapters
+     * expose one. On cancellation the in-flight provider call is <em>not</em> aborted; it keeps
+     * running in the background until it completes or the reliability-layer deadline reclaims it.
+     * This bounds how long the caller waits, not how long the provider keeps generating. Tools are
+     * not available on the streaming path. */
+    public Outcome runStreaming(TaskRequest task, Consumer<String> onToken, BooleanSupplier cancelled) {
+        return runStreaming(task, onToken, cancelled, List.of());
+    }
+
+    private Outcome runStreamingCore(TaskRequest task, Consumer<String> onToken, BooleanSupplier cancelled,
+                                       List<ChatMessage> history) {
         long startTime = System.currentTimeMillis();
         ProviderConfig provider = router.route(task, List.of());
         TaskRequest executionTask = memoryContextProvider == null ? task
                 : new TaskRequest(memoryContextProvider.augment(task.prompt()), task.workload(), task.requestedTier(), task.strict());
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(config.reliability().requestDeadlineSeconds());
         return reliabilityExecutor.execute(provider,
-                () -> streamWithProvider(executionTask, onToken, startTime, provider, cancelled), false, deadline);
+                () -> streamWithProvider(executionTask, onToken, startTime, provider, cancelled, history), false, deadline);
     }
 
     private static final long CANCELLATION_POLL_MILLIS = 200;
 
     private Outcome streamWithProvider(TaskRequest task, Consumer<String> onToken, long startTime,
-                                        ProviderConfig provider, BooleanSupplier cancelled) {
+                                        ProviderConfig provider, BooleanSupplier cancelled, List<ChatMessage> history) {
         try (var span = telemetry.span("gen_ai.chat")
                 .attribute("gen_ai.operation.name", "chat")
                 .attribute("gen_ai.provider.name", provider.id())
@@ -469,7 +493,7 @@ public class HarnessOrchestrator {
         TokenUsage[] usageHolder = new TokenUsage[1];
         RuntimeException[] errorHolder = new RuntimeException[1];
 
-        ChatRequest request = ChatRequest.builder().messages(UserMessage.from(task.prompt())).build();
+        ChatRequest request = ChatRequest.builder().messages(withCurrentTurn(history, task.prompt())).build();
         model.chat(request, new StreamingChatResponseHandler() {
             @Override
             public void onPartialResponse(String partialResponse) {
@@ -529,7 +553,8 @@ public class HarnessOrchestrator {
             ProviderConfig provider,
             List<Object> selectedTools,
             List<String> selectedToolNames,
-            long startTime) {
+            long startTime,
+            List<ChatMessage> history) {
         try (var span = telemetry.span("gen_ai.chat")
                 .attribute("gen_ai.operation.name", "chat")
                 .attribute("gen_ai.provider.name", provider.id())
@@ -538,7 +563,8 @@ public class HarnessOrchestrator {
         ChatModel model = modelFactory.create(provider);
 
         if (!provider.toolsEnabled() || (selectedTools.isEmpty() && mcpToolProvider == null)) {
-            ChatResponse response = model.chat(ChatRequest.builder().messages(UserMessage.from(task.prompt())).build());
+            List<ChatMessage> messages = withCurrentTurn(history, task.prompt());
+            ChatResponse response = model.chat(ChatRequest.builder().messages(messages).build());
             long duration = System.currentTimeMillis() - startTime;
             long inputTokens = tokensOrZero(response.metadata() == null || response.metadata().tokenUsage() == null
                     ? null : response.metadata().tokenUsage().inputTokenCount());
@@ -559,7 +585,14 @@ public class HarnessOrchestrator {
         }
         Assistant assistant = builder.build();
 
-        Result<String> result = assistant.chat(task.prompt());
+        // AiServices.Assistant only takes a single prompt string, not a message list, so history
+        // (when present) is flattened and prepended rather than dropped -- losing it here would be a
+        // silent regression on any request where CastCLI's own tool selector fires, not just a
+        // documented gap. This branch is CastCLI's own ApprovalGate-gated tool execution, a
+        // deliberately different path from the "no tools" branch above where a real message list is
+        // used directly.
+        String prompt = history.isEmpty() ? task.prompt() : flattenHistoryForPrompt(history) + "\n\n" + task.prompt();
+        Result<String> result = assistant.chat(prompt);
         List<String> toolsUsed = result.toolExecutions().stream()
                 .map(execution -> execution.request().name())
                 .toList();
@@ -572,6 +605,47 @@ public class HarnessOrchestrator {
                 .attribute("gen_ai.usage.output_tokens", outputTokens);
         return new Outcome(provider, GuardrailFilter.filter(result.content()), selectedToolNames, toolsUsed, duration, false, inputTokens, outputTokens, cost);
         }
+    }
+
+    private static List<ChatMessage> withCurrentTurn(List<ChatMessage> history, String currentPrompt) {
+        if (history.isEmpty()) {
+            return List.of(UserMessage.from(currentPrompt));
+        }
+        List<ChatMessage> messages = new ArrayList<>(history);
+        messages.add(UserMessage.from(currentPrompt));
+        return messages;
+    }
+
+    /** Renders prior turns as a single role-tagged block, used only as a fallback so CastCLI's own
+     * (AiServices-executed) tools never silently lose conversation history -- see the comment where
+     * this is called in {@link #executeWithProvider}. */
+    private static String flattenHistoryForPrompt(List<ChatMessage> history) {
+        StringBuilder rendered = new StringBuilder();
+        for (ChatMessage message : history) {
+            String role;
+            String text;
+            if (message instanceof SystemMessage system) {
+                role = "system";
+                text = system.text();
+            } else if (message instanceof UserMessage user) {
+                role = "user";
+                text = user.hasSingleText() ? user.singleText() : user.toString();
+            } else if (message instanceof AiMessage ai) {
+                role = "assistant";
+                text = ai.text() == null ? "" : ai.text();
+            } else if (message instanceof ToolExecutionResultMessage toolResult) {
+                role = "tool";
+                text = toolResult.text();
+            } else {
+                role = "message";
+                text = message.toString();
+            }
+            if (!rendered.isEmpty()) {
+                rendered.append("\n\n");
+            }
+            rendered.append(role).append(": ").append(text);
+        }
+        return rendered.toString();
     }
 
     private static long tokensOrZero(Integer count) {

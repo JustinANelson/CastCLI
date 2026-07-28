@@ -27,11 +27,15 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /**
  * Handler for {@code POST /v1/chat/completions}. Supports non-streaming responses, SSE streaming
  * (Phase 2), and client-side tool passthrough (Phase 3, non-streaming only -- combining streaming
- * with tools is rejected). When no tools are involved, the OpenAI {@code messages[]} array is
- * flattened into a single prompt (multi-turn fidelity is deferred to a later phase); when tools are
- * involved, {@link ClientToolSupport} reconstructs the real message list instead, since tool-call
- * round trips cannot survive flattening. Routes through the same {@link HarnessOrchestrator} calls
- * the {@code ask} CLI command uses.
+ * with tools is rejected). When tools are involved, {@link ClientToolSupport} reconstructs the real
+ * message list for the whole conversation, since tool-call round trips cannot survive flattening.
+ * When no tools are involved (Phase 4), a request ending in a {@code role:"user"} message is split
+ * into prior-turn history plus the current turn via {@link ClientToolSupport#splitLastUserTurn} --
+ * history is sent to the model as real messages, while the current turn's text still flows through
+ * {@code TaskRequest} so fastPath/routing/memory-augmentation heuristics keep working unchanged. A
+ * request that doesn't end in a user message (rare for a plain chat-completions call) falls back to
+ * the original whole-conversation flattening instead of being rejected. Routes through the same
+ * {@link HarnessOrchestrator} calls the {@code ask} CLI command uses.
  */
 final class ChatCompletionsHandler implements HttpHandler {
 
@@ -69,24 +73,33 @@ final class ChatCompletionsHandler implements HttpHandler {
         }
 
         String prompt;
+        List<ChatMessage> history;
         try {
-            prompt = flattenMessages(request.path("messages"));
+            JsonNode messagesNode = request.path("messages");
+            if (ClientToolSupport.endsWithUserMessage(messagesNode)) {
+                ClientToolSupport.ConversationSplit split = ClientToolSupport.splitLastUserTurn(messagesNode);
+                history = split.history();
+                prompt = split.currentUserText();
+            } else {
+                history = List.of();
+                prompt = flattenMessages(messagesNode);
+            }
         } catch (IllegalArgumentException e) {
             GatewayErrors.send(exchange, mapper, 400, "invalid_request_error", e.getMessage());
             return;
         }
 
         if (request.path("stream").asBoolean(false)) {
-            handleStreaming(exchange, request, prompt);
+            handleStreaming(exchange, request, prompt, history);
         } else {
-            handleNonStreaming(exchange, prompt);
+            handleNonStreaming(exchange, prompt, history);
         }
     }
 
-    private void handleNonStreaming(HttpExchange exchange, String prompt) throws IOException {
+    private void handleNonStreaming(HttpExchange exchange, String prompt, List<ChatMessage> history) throws IOException {
         try {
             TaskRequest task = new TaskRequest(prompt, Workload.AUTO, null);
-            HarnessOrchestrator.Outcome outcome = orchestrator.run(task);
+            HarnessOrchestrator.Outcome outcome = orchestrator.run(task, history);
             sendCompletion(exchange, outcome);
         } catch (RuntimeException e) {
             ErrorMapping mapping = mapException(e);
@@ -192,7 +205,8 @@ final class ChatCompletionsHandler implements HttpHandler {
      * committed, a later failure can only be surfaced as a terminal SSE event, not an HTTP status
      * change -- that is an inherent constraint of streaming, not something a bigger try/catch fixes.
      */
-    private void handleStreaming(HttpExchange exchange, JsonNode request, String prompt) throws IOException {
+    private void handleStreaming(HttpExchange exchange, JsonNode request, String prompt, List<ChatMessage> history)
+            throws IOException {
         String id = "chatcmpl-" + UUID.randomUUID();
         String requestedModel = request.path("model").asText("castcli");
         boolean includeUsage = request.path("stream_options").path("include_usage").asBoolean(false);
@@ -223,7 +237,7 @@ final class ChatCompletionsHandler implements HttpHandler {
         HarnessOrchestrator.Outcome outcome;
         try {
             TaskRequest task = new TaskRequest(prompt, Workload.AUTO, null);
-            outcome = orchestrator.runStreaming(task, onToken, clientDisconnected::get);
+            outcome = orchestrator.runStreaming(task, onToken, clientDisconnected::get, history);
         } catch (RuntimeException e) {
             if (!headersSent.get()) {
                 ErrorMapping mapping = mapException(e);

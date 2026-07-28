@@ -182,4 +182,53 @@ class ClientToolSupportTest {
         assertThatThrownBy(() -> ClientToolSupport.toChatMessages(json("[]")))
                 .isInstanceOf(IllegalArgumentException.class);
     }
+
+    @Test
+    void endsWithUserMessageDetectsTrailingUserRole() {
+        assertThat(ClientToolSupport.endsWithUserMessage(json("""
+                [{"role":"system","content":"x"},{"role":"user","content":"y"}]
+                """))).isTrue();
+        assertThat(ClientToolSupport.endsWithUserMessage(json("""
+                [{"role":"user","content":"y"},{"role":"assistant","content":"z"}]
+                """))).isFalse();
+        assertThat(ClientToolSupport.endsWithUserMessage(json("[]"))).isFalse();
+    }
+
+    @Test
+    void splitLastUserTurnSeparatesHistoryFromCurrentTurn() {
+        JsonNode messages = json("""
+                [
+                  {"role":"system","content":"be brief"},
+                  {"role":"user","content":"first"},
+                  {"role":"assistant","content":"first reply"},
+                  {"role":"user","content":"second"}
+                ]
+                """);
+
+        ClientToolSupport.ConversationSplit split = ClientToolSupport.splitLastUserTurn(messages);
+
+        assertThat(split.currentUserText()).isEqualTo("second");
+        assertThat(split.history()).hasSize(3);
+        assertThat(split.history().get(0)).isInstanceOf(SystemMessage.class);
+        assertThat(split.history().get(1)).isInstanceOf(UserMessage.class);
+        assertThat(split.history().get(2)).isInstanceOf(AiMessage.class);
+    }
+
+    @Test
+    void splitLastUserTurnOnSingleUserMessageYieldsEmptyHistory() {
+        ClientToolSupport.ConversationSplit split = ClientToolSupport.splitLastUserTurn(json("""
+                [{"role":"user","content":"hi"}]
+                """));
+        assertThat(split.history()).isEmpty();
+        assertThat(split.currentUserText()).isEqualTo("hi");
+    }
+
+    @Test
+    void splitLastUserTurnRejectsConversationNotEndingInUser() {
+        JsonNode messages = json("""
+                [{"role":"user","content":"hi"},{"role":"assistant","content":"hello"}]
+                """);
+        assertThatThrownBy(() -> ClientToolSupport.splitLastUserTurn(messages))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
 }

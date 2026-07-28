@@ -46,7 +46,10 @@ class GatewayHttpServerTest {
     }
 
     /** Stubs {@link HarnessOrchestrator#run} so tests exercise the gateway's HTTP/mapping layer
-     * without making a real model call. */
+     * without making a real model call. Overrides the history-aware overload, since that's what
+     * {@code ChatCompletionsHandler} actually calls (with an empty history for a single-turn
+     * request) -- overriding the single-arg convenience method here would silently not intercept
+     * anything and fall through to a real network call. */
     private static class StubOrchestrator extends HarnessOrchestrator {
         private final Outcome outcome;
 
@@ -56,7 +59,7 @@ class GatewayHttpServerTest {
         }
 
         @Override
-        public Outcome run(TaskRequest task) {
+        public Outcome run(TaskRequest task, List<ChatMessage> history) {
             return outcome;
         }
     }
@@ -108,11 +111,70 @@ class GatewayHttpServerTest {
     }
 
     @Test
-    void chatCompletionsFlattensMultiTurnMessages() throws Exception {
+    void chatCompletionsSendsHistoryAsRealMessagesNotAFlattenedBlob() throws Exception {
+        tearDown();
+        HarnessConfig config = config();
+        HarnessOrchestrator.Outcome outcome = new HarnessOrchestrator.Outcome(
+                config.providers().getFirst(), "ok", List.of(), List.of(), 1L, false, 1L, 1L, 0.0);
+        List<List<ChatMessage>> captured = new java.util.ArrayList<>();
+        List<String> capturedPrompt = new java.util.ArrayList<>();
+        startServer("127.0.0.1", null, new StubOrchestrator(config, outcome) {
+            @Override
+            public Outcome run(TaskRequest task, List<ChatMessage> history) {
+                captured.add(history);
+                capturedPrompt.add(task.prompt());
+                return outcome;
+            }
+        });
+
         HttpResponse<String> response = post("""
-                {"messages":[{"role":"system","content":"be brief"},{"role":"user","content":"hi"}]}
+                {"messages":[
+                  {"role":"system","content":"be brief"},
+                  {"role":"user","content":"first question"},
+                  {"role":"assistant","content":"first answer"},
+                  {"role":"user","content":"second question"}
+                ]}
                 """);
+
         assertThat(response.statusCode()).isEqualTo(200);
+        assertThat(captured).hasSize(1);
+        List<ChatMessage> history = captured.getFirst();
+        assertThat(history).hasSize(3);
+        assertThat(history.get(0)).isInstanceOf(dev.langchain4j.data.message.SystemMessage.class);
+        assertThat(((dev.langchain4j.data.message.SystemMessage) history.get(0)).text()).isEqualTo("be brief");
+        assertThat(history.get(1)).isInstanceOf(dev.langchain4j.data.message.UserMessage.class);
+        assertThat(((dev.langchain4j.data.message.UserMessage) history.get(1)).singleText()).isEqualTo("first question");
+        assertThat(history.get(2)).isInstanceOf(dev.langchain4j.data.message.AiMessage.class);
+        assertThat(((dev.langchain4j.data.message.AiMessage) history.get(2)).text()).isEqualTo("first answer");
+        // The current turn is not duplicated into history -- it stays the TaskRequest prompt so
+        // fastPath/routing/memory heuristics keep working exactly as the single-turn path always has.
+        assertThat(capturedPrompt.getFirst()).isEqualTo("second question");
+    }
+
+    @Test
+    void chatCompletionsFallsBackToFlatteningWhenConversationDoesNotEndInUserMessage() throws Exception {
+        tearDown();
+        HarnessConfig config = config();
+        HarnessOrchestrator.Outcome outcome = new HarnessOrchestrator.Outcome(
+                config.providers().getFirst(), "ok", List.of(), List.of(), 1L, false, 1L, 1L, 0.0);
+        List<List<ChatMessage>> captured = new java.util.ArrayList<>();
+        List<String> capturedPrompt = new java.util.ArrayList<>();
+        startServer("127.0.0.1", null, new StubOrchestrator(config, outcome) {
+            @Override
+            public Outcome run(TaskRequest task, List<ChatMessage> history) {
+                captured.add(history);
+                capturedPrompt.add(task.prompt());
+                return outcome;
+            }
+        });
+
+        HttpResponse<String> response = post("""
+                {"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":"hello"}]}
+                """);
+
+        assertThat(response.statusCode()).isEqualTo(200);
+        assertThat(captured.getFirst()).isEmpty();
+        assertThat(capturedPrompt.getFirst()).contains("user: hi").contains("assistant: hello");
     }
 
     @Test
@@ -124,7 +186,7 @@ class GatewayHttpServerTest {
         startServer("127.0.0.1", null, new StubOrchestrator(config, outcome) {
             @Override
             public Outcome runStreaming(TaskRequest task, java.util.function.Consumer<String> onToken,
-                                          java.util.function.BooleanSupplier cancelled) {
+                                          java.util.function.BooleanSupplier cancelled, List<ChatMessage> history) {
                 onToken.accept("hi");
                 onToken.accept(" there");
                 return outcome;
@@ -174,7 +236,7 @@ class GatewayHttpServerTest {
         startServer("127.0.0.1", null, new StubOrchestrator(config, outcome) {
             @Override
             public Outcome runStreaming(TaskRequest task, java.util.function.Consumer<String> onToken,
-                                          java.util.function.BooleanSupplier cancelled) {
+                                          java.util.function.BooleanSupplier cancelled, List<ChatMessage> history) {
                 onToken.accept("first");
                 try {
                     Thread.sleep(delayMillis);
@@ -220,7 +282,7 @@ class GatewayHttpServerTest {
         startServer("127.0.0.1", null, new StubOrchestrator(config, outcome) {
             @Override
             public Outcome runStreaming(TaskRequest task, java.util.function.Consumer<String> onToken,
-                                          java.util.function.BooleanSupplier cancelled) {
+                                          java.util.function.BooleanSupplier cancelled, List<ChatMessage> history) {
                 while (!cancelled.getAsBoolean()) {
                     onToken.accept("tick ");
                     try {

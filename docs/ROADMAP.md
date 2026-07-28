@@ -65,16 +65,27 @@ default with fail-closed bearer auth), Phase 2 (SSE streaming with cooperative, 
 client-disconnect cancellation and optional `stream_options.include_usage`), and Phase 3
 (client-side tool passthrough: OpenAI `tools`/`tool_choice` are parsed and sent to the model, and any
 resulting tool calls are handed back to the caller unexecuted, non-streaming only) are done.
-Multi-turn history for the non-tool path remains a follow-on phase (the tool-calling path already
-reconstructs full message history, since tool-call round trips cannot survive flattening). Known
-gaps carried forward: guardrail filtering on the streaming path is per-chunk only (a redacted
+Phase 4 (multi-turn history for the non-tool path) is also done: a request ending in a `role:"user"`
+message has its prior turns sent to the model as real `SystemMessage`/`UserMessage`/`AiMessage`
+entries (via `HarnessOrchestrator.run(task, history)` / `runStreaming(..., history)`) instead of a
+flattened text blob, while the current turn still flows through `TaskRequest.prompt()` so
+fastPath/routing/memory-augmentation heuristics are unaffected. A request that doesn't end in a user
+message falls back to the original whole-conversation flattening (non-regressive, just lower
+fidelity for that rare shape) rather than being rejected. When CastCLI's own server-side tools fire
+(the `AiServices` branch, keyed off `DefaultToolSelector`'s keyword heuristics), history is
+flattened and prepended to the prompt rather than sent as real messages, since `AiServices` only
+accepts a single prompt string -- carried forward as a gap rather than dropped silently.
+
+Known gaps carried forward: guardrail filtering on the streaming path is per-chunk only (a redacted
 pattern split across two streamed tokens is not caught); client-disconnect detection relies on the
 next attempted write failing, so a stalled/paused generation is not noticed until the next token
 attempt; combining `stream:true` with client `tools` is rejected (streaming tool-call argument
 deltas are not implemented); a forced named `tool_choice` is emulated by narrowing the tool list to
-one entry plus `REQUIRED`, since the underlying model client has no native per-function forcing;
-and tool parameter JSON Schemas are passed through as opaque raw schema (verified to reach the wire
-intact in `JsonRawSchemaWireVerificationTest`) rather than validated by CastCLI itself.
+one entry plus `REQUIRED`, since the underlying model client has no native per-function forcing; tool
+parameter JSON Schemas are passed through as opaque raw schema (verified to reach the wire intact in
+`JsonRawSchemaWireVerificationTest`) rather than validated by CastCLI itself; and CastCLI's own
+server-side tool path (as opposed to client-tool passthrough) still flattens history into the prompt
+string instead of sending real messages.
 
 Add a locally hosted API surface so clients can adopt CastCLI by changing a base URL.
 

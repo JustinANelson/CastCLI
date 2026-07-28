@@ -131,16 +131,63 @@ final class ClientToolSupport {
         }
         List<ChatMessage> result = new ArrayList<>();
         for (JsonNode message : messages) {
-            String role = message.path("role").asText("user");
-            switch (role) {
-                case "system" -> result.add(SystemMessage.from(requireTextContent(message)));
-                case "user" -> result.add(UserMessage.from(requireTextContent(message)));
-                case "assistant" -> result.add(toAssistantMessage(message));
-                case "tool" -> result.add(toToolResultMessage(message));
-                default -> throw new IllegalArgumentException("Unsupported message role: " + role);
-            }
+            result.add(toChatMessage(message));
         }
         return result;
+    }
+
+    /** As {@link #toChatMessages(JsonNode)}, for callers that already hold a plain sublist (e.g. "all
+     * messages but the last") rather than the original request's array node. Does not itself enforce
+     * non-emptiness -- an empty list is a valid history (a first turn with no prior context). */
+    static List<ChatMessage> toChatMessages(List<JsonNode> messages) {
+        List<ChatMessage> result = new ArrayList<>();
+        for (JsonNode message : messages) {
+            result.add(toChatMessage(message));
+        }
+        return result;
+    }
+
+    private static ChatMessage toChatMessage(JsonNode message) {
+        String role = message.path("role").asText("user");
+        return switch (role) {
+            case "system" -> SystemMessage.from(requireTextContent(message));
+            case "user" -> UserMessage.from(requireTextContent(message));
+            case "assistant" -> toAssistantMessage(message);
+            case "tool" -> toToolResultMessage(message);
+            default -> throw new IllegalArgumentException("Unsupported message role: " + role);
+        };
+    }
+
+    /** The conversation split into everything before the current turn and the current turn's text,
+     * for {@link HarnessOrchestrator#run(dev.justnels.castcli.orchestration.TaskRequest, List)} and its
+     * streaming counterpart, which append the current turn to {@code history} themselves. */
+    record ConversationSplit(List<ChatMessage> history, String currentUserText) {
+    }
+
+    /** {@code true} exactly when {@code messages} is a non-empty array whose last element has
+     * {@code role:"user"} -- the shape {@link #splitLastUserTurn} requires. Requests that don't fit
+     * this shape (e.g. ending in an assistant message) fall back to the caller's own handling rather
+     * than being rejected outright; see {@code ChatCompletionsHandler}. */
+    static boolean endsWithUserMessage(JsonNode messages) {
+        return messages.isArray() && !messages.isEmpty()
+                && "user".equals(messages.get(messages.size() - 1).path("role").asText());
+    }
+
+    /**
+     * Splits an OpenAI {@code messages[]} array -- known to end in a {@code role:"user"} message via
+     * {@link #endsWithUserMessage} -- into prior-turn history and the current user turn's text, so the
+     * current turn can still pass through {@code TaskRequest}-based fastPath/routing/memory-
+     * augmentation heuristics exactly as the single-prompt path always has, while the model still
+     * receives real conversation structure for everything before it.
+     */
+    static ConversationSplit splitLastUserTurn(JsonNode messages) {
+        if (!endsWithUserMessage(messages)) {
+            throw new IllegalArgumentException("splitLastUserTurn requires 'messages' to end with a role:'user' message.");
+        }
+        List<JsonNode> all = new ArrayList<>();
+        messages.forEach(all::add);
+        JsonNode last = all.remove(all.size() - 1);
+        return new ConversationSplit(toChatMessages(all), requireTextContent(last));
     }
 
     private static ChatMessage toAssistantMessage(JsonNode message) {
