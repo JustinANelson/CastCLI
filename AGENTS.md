@@ -1,52 +1,59 @@
-# CastCLI delegation policy
+# CastCLI agent guidance
 
-When the CastCLI MCP server is available, prefer its structured delegation tools, then `ask_local`, for
-bounded, read-only, low-risk work:
+## Context budget
 
-- summarization, classification, extraction, formatting, and naming;
-- first-pass explanations of logs, stack traces, or documentation;
-- draft test cases, release notes, comments, or implementation outlines;
-- repository searches and other tasks whose result you can cheaply verify.
+- Search with `rg` before opening files and read only the relevant sections.
+- Do not load generated files, build output, vendored code, or lockfiles unless the task requires them.
+- Do not reread unchanged files when the current diff or work checklist provides enough state.
+- Summarize large command output, preserving actionable errors and verification evidence.
+- Add durable instructions only for repeated, repository-specific friction; do not duplicate higher-level guidance.
 
-Use the most specific structured tool available:
+Read project documentation only when relevant:
 
-- `summarize_files` for bounded code or documentation synthesis;
-- `analyze_failure` for first-pass log, stack-trace, build, and test triage;
-- `draft_patch` for candidate unified diffs that the frontier agent will review and apply;
-- `generate_tests` for test code and edge-case tables;
-- `review_diff` for non-security, non-final review;
-- `map_change_impact` for symbol/reference impact analysis;
-- `ask_local` only when none of the structured tools fits.
+- Commands and setup: `docs/COMMANDS.md`
+- Architecture: `docs/ARCHITECTURE.md`
+- CastCLI delegation: `docs/CODEX_MCP.md`
+- Operations and releases: `docs/OPERATIONS.md`
+- Active multi-turn work: `docs/WORK_CHECKLIST.md`
 
-Delegate when the input is bounded, the output is advisory or reversible, verification is materially cheaper
-than producing the result, and the task exercises no sensitive authority. For each substantial coding turn,
-actively look for at least one eligible subtask. Do not delegate tiny tasks when tool latency and result review
-would cost as much as doing the work directly. Read-only delegation may still return code, tests, or a unified
-diff; it must not claim that those outputs were applied or verified.
+## CastCLI delegation
 
-Do not delegate credential handling, security or authorization decisions, destructive changes, production
-operations, final correctness review, or tasks that require an unabridged large context. CastCLI MCP is
-read-only, but local-model output remains untrusted until checked.
+When the CastCLI MCP server is available, actively look for one eligible subtask during each substantial coding
+turn. Delegate only bounded, read-only, low-risk work when verification is materially cheaper than producing the
+result. Prefer the most specific structured tool (`summarize_files`, `analyze_failure`, `draft_patch`,
+`generate_tests`, `review_diff`, or `map_change_impact`), then use `ask_local` only when none fits. Skip
+delegation when the task is too small to repay tool latency and review cost.
 
-When delegation succeeds, use the returned answer instead of silently repeating the same work. Preserve the
-compact CastCLI delegation receipt in progress reporting when useful. If the result is inadequate, explain
-why before doing the task directly.
+Do not delegate credentials, security or authorization decisions, destructive changes, production operations,
+final correctness review, or work requiring unabridged large context. Treat local-model output as untrusted until
+reviewed and verified. When delegation succeeds, use its result instead of silently repeating the work; preserve
+the compact delegation receipt when useful. If the result is inadequate, explain why before doing the work
+directly.
 
-Always include `"_meta": {"callerModel": "<your-model-name>"}` alongside the `arguments` in every CastCLI
-tool call (e.g. `"claude-sonnet-4-6"`, `"gpt-4o"`, `"gemini-2.0-flash"`). The server records it so that
-`cast-cli mcp-usage` can estimate how much frontier spend was avoided without requiring any harness
-configuration. The field is optional and advisory; omitting it degrades the cost report but does not affect
-tool behavior.
+Include `"_meta": {"callerModel": "<your-model-name>"}` alongside `arguments` in every CastCLI tool call so
+`mcp-usage` can estimate avoided frontier spend.
 
-For verification, run cast-cli mcp-usage --fail-if-unused (or the equivalent Gradle command documented in
-docs/CODEX_MCP.md). Use fresh, equivalent Codex sessions for A/B token comparisons.
+## Verification
 
-# Persistent work checklist
+Run the narrowest relevant check first:
 
-Always maintain a persistent checklist in `docs/WORK_CHECKLIST.md` so another LLM or a later turn can resume
-the work without reconstructing prior context. Create the file if it does not exist, update it at the start of
-each work turn, and update it again before ending the turn. Use Markdown checkboxes and record the current
-objective, completed work, remaining steps, blockers or open decisions, and the next concrete action. Include
-relevant file paths and verification commands or results. Keep the checklist accurate: mark an item complete
-only after it has been implemented and verified, and remove or archive stale entries that no longer help with
-resumption.
+- Tests: `.\gradlew.bat test`
+- Full validation: `.\gradlew.bat check`
+- Patch hygiene: `git diff --check`
+- Delegation audit: `.\gradlew.bat run --args="--config config/harness.local.json mcp-usage --since-hours 24 --fail-if-unused"`
+
+Run the delegation audit after substantial coding work when CastCLI was available and eligible. For A/B token
+comparisons, use fresh sessions with equivalent model, reasoning effort, prompt, and repository state.
+
+## Persistent work checklist
+
+Maintain `docs/WORK_CHECKLIST.md` for multi-step work, work likely to span turns, or any turn ending with unfinished
+work. When required, create or update it after scoping and again before ending the turn. Keep only the active
+objective, Markdown-checkbox steps, blockers or open decisions, next concrete action, relevant paths, and
+verification status. Do not update it for read-only questions or trivial completed tasks. Mark work complete only
+after verification, and remove or archive stale entries.
+
+## Reporting
+
+Report decisions, material results, blockers, and verification outcomes. Omit narration of routine searches,
+reads, and successful commands.
