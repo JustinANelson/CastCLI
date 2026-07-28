@@ -9,7 +9,7 @@ plugins {
 group = "dev.justnels.castcli"
 version = (findProperty("castcliVersion") as String?)
     ?: System.getenv("CASTCLI_VERSION")
-    ?: "0.1.1-SNAPSHOT"
+    ?: "0.1.2-SNAPSHOT"
 
 repositories {
     mavenCentral()

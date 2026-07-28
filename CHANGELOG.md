@@ -6,7 +6,36 @@ All notable changes to CastCLI are documented here. Format loosely follows
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-07-28
+
+### Added
+- `gateway`: an OpenAI-compatible inbound HTTP gateway (`/v1/chat/completions`, `/v1/models`) with
+  bearer-token authentication, so existing OpenAI-SDK clients can route through CastCLI by changing
+  only their base URL (phase 1: non-streaming, no client-tool passthrough yet).
+- `index`: an incremental semantic (embedding-based) workspace search index, persisted to disk and
+  exposed as the `semantic_search_workspace` MCP tool -- unchanged files are skipped by content hash
+  on rebuild, and `semanticSearchWorkspace` now auto-refreshes a stale index in the background
+  instead of blocking the search call on a full rebuild.
+- `mcp-usage`: reports MCP delegation utilization, estimated cost savings from local-model
+  delegation, and optional Codex A/B token-usage comparisons.
+- `init` now works from any working directory, including the standalone release zip/jpackage
+  bundle: hardware presets are bundled on the classpath (`config/*.json` remains the git-tracked
+  source of truth; `processResources` mirrors them into the jar), and any command auto-creates
+  `.cast/harness.local.json` the first time it can't find a config, anchored at the nearest
+  ancestor `.git` directory.
+- `init` now detects AMD/other non-NVIDIA GPUs by matching the reported GPU name against the
+  hardware presets' documented card list, instead of only trying `nvidia-smi`.
+- `init` now substitutes an already-installed, compatible model (same base family and parameter
+  size, any quantization/instruct variant) for a preset's default `modelName` when one exists,
+  instead of always asking you to pull the exact preset tag.
+- Default `--config` is now `.cast/harness.local.json` (previously `config/harness.local.json`),
+  consistent with the existing `.cast/` convention for memory, traces, and MCP usage logs.
+
 ### Fixed
+- `init`'s Ollama reachability check no longer reports "not reachable" for a running Ollama
+  instance that just needed a moment to accept its first connection (added one retry after a short
+  delay) -- and, more significantly, no longer always failed regardless of retries: it was probing
+  a preset's still-templated `${OLLAMA_BASE_URL:...}` placeholder instead of the expanded URL.
 - Release automation now uses GitHub's supported `macos-15-intel` runner, can rebuild native
   bundles for an existing immutable tag, and avoids emulating the platform-independent Java build.
 
