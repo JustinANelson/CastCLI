@@ -67,6 +67,17 @@ tasks.jar {
     }
 }
 
+// Bundle the hardware presets onto the classpath (under /presets/) so InitService's default,
+// classpath-based lookup works from any working directory -- including the standalone release
+// zip / jpackage image, which doesn't carry a config/ directory. config/ remains the single
+// source of truth in git; this just mirrors those specific files into the jar at build time.
+tasks.named<ProcessResources>("processResources") {
+    from("config") {
+        include("harness.vram-*.json", "harness.apple-silicon.json")
+        into("presets")
+    }
+}
+
 tasks.test {
     useJUnitPlatform()
     finalizedBy(tasks.jacocoTestReport)
