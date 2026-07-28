@@ -56,8 +56,8 @@ import java.util.concurrent.Callable;
         versionProvider = CastCli.VersionProvider.class,
         subcommands = {CastCli.Ask.class, CastCli.Models.class, CastCli.Commission.class, CastCli.McpServe.class,
                 CastCli.Index.class, CastCli.RouteEval.class, CastCli.Memory.class, CastCli.Telemetry.class,
-                CastCli.McpUsage.class, CastCli.Doctor.class, CastCli.HealthServer.class, CastCli.Completion.class,
-                CastCli.ConfigCmd.class, CastCli.Init.class})
+                CastCli.McpUsage.class, CastCli.Doctor.class, CastCli.HealthServer.class, CastCli.Gateway.class,
+                CastCli.Completion.class, CastCli.ConfigCmd.class, CastCli.Init.class})
 public final class CastCli implements Runnable {
     @Option(names = "--config", description = "Path to CastCLI JSON configuration.",
             defaultValue = "config/harness.local.json")
@@ -800,6 +800,45 @@ public final class CastCli implements Runnable {
         }
     }
 
+    @Command(name = "gateway",
+            description = "Run the OpenAI-compatible inbound gateway (phase 1: non-streaming /v1/chat/completions "
+                    + "and /v1/models, no client-tool passthrough) so existing OpenAI-SDK clients can route through "
+                    + "CastCLI by changing only their base URL.",
+            mixinStandardHelpOptions = true)
+    static final class Gateway implements Callable<Integer> {
+        @CommandLine.ParentCommand private CastCli parent;
+
+        @Option(names = "--port", defaultValue = "8081", description = "Port to listen on for the gateway.")
+        private int port;
+
+        @Option(names = "--bind", defaultValue = "127.0.0.1",
+                description = "Address to bind (default: loopback; a non-loopback bind requires --token).")
+        private String bindAddress;
+
+        @Option(names = "--token",
+                description = "Bearer token clients must present as 'Authorization: Bearer <token>'. "
+                        + "Required when --bind is not loopback; optional (but recommended) on loopback.")
+        private String token;
+
+        @Override public Integer call() throws Exception {
+            HarnessConfig config = parent.loadConfig();
+            try (dev.justnels.castcli.gateway.GatewayHttpServer server =
+                         new dev.justnels.castcli.gateway.GatewayHttpServer(bindAddress, port, config, token)) {
+                server.start();
+                dev.justnels.castcli.lifecycle.ShutdownHookManager.getInstance().register(server);
+                System.out.println("CastCLI OpenAI-compatible gateway started on " + server.getAddress()
+                        + ". Press Ctrl+C to stop.");
+                if (token == null || token.isBlank()) {
+                    System.out.println("No --token configured; requests are unauthenticated (loopback only).");
+                }
+                Thread.currentThread().join();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            return 0;
+        }
+    }
+
     @Command(name = "completion", description = "Generate shell auto-completion scripts for cast-cli.",
             mixinStandardHelpOptions = true)
     static final class Completion implements Callable<Integer> {
@@ -842,6 +881,7 @@ public final class CastCli implements Runnable {
                         'mcp-serve:serve local delegation tools over stdio'
                         'mcp-usage:report MCP delegation utilization'
                         'health-server:serve health and metrics endpoints'
+                        'gateway:serve the OpenAI-compatible inbound gateway'
                         'completion:generate shell completion'
                       )
                       _arguments -C \
@@ -863,7 +903,7 @@ public final class CastCli implements Runnable {
                         $candidates = @(
                             '--help','--version','--config',
                             'init','doctor','config','ask','commission','models','memory','index',
-                            'route-eval','telemetry','mcp-serve','mcp-usage','health-server','completion'
+                            'route-eval','telemetry','mcp-serve','mcp-usage','health-server','gateway','completion'
                         )
                         $candidates |
                             Where-Object { $_ -like "$wordToComplete*" } |
