@@ -97,9 +97,85 @@ public final class InitService {
             return new DetectionResult(preset, "Detected " + vramMb + " MB VRAM via nvidia-smi");
         }
 
+        // nvidia-smi only ever reports NVIDIA VRAM directly; AMD has no equivalent CLI reliably present on
+        // a typical Windows gaming rig (ROCm/rocm-smi is Linux-first and rarely installed there). Fall back
+        // to matching the GPU's reported name against the specific cards this project documents support
+        // for, the same list published in the README's hardware preset table.
+        String gpuName = detectGpuName();
+        DetectionResult nameMatch = matchKnownGpuName(gpuName);
+        if (nameMatch != null) {
+            return nameMatch;
+        }
+
+        String detail = "Could not detect GPU VRAM (no nvidia-smi / no discrete GPU found)";
+        if (gpuName != null && !gpuName.isBlank()) {
+            detail = "Detected GPU '" + gpuName.trim().replace("\n", " / ")
+                    + "' but it isn't in the known-model table";
+        }
         return new DetectionResult(Preset.VRAM_8GB,
-                "Could not detect GPU VRAM (no nvidia-smi / no discrete GPU found); "
-                        + "defaulting to the most conservative preset. Pass --preset to override.");
+                detail + "; defaulting to the most conservative preset. Pass --preset to override.");
+    }
+
+    /** GPU model-name substring (matched case-insensitively) to the preset it maps to, mirroring the
+     * hardware table in README.md. Checked in order, most VRAM first, so a more specific variant (e.g.
+     * "4060 Ti", 16GB) is matched before a less specific one that would otherwise also match (e.g. plain
+     * "RTX 4060", 8GB) since the specific string is checked first. RTX 3060 is deliberately omitted: its
+     * 8GB/12GB variants share the same reported name with no way to tell them apart without nvidia-smi,
+     * which would already have handled it above if present. */
+    private record GpuNameMatch(String needle, Preset preset) {
+    }
+
+    private static final List<GpuNameMatch> KNOWN_GPU_NAMES = List.of(
+            new GpuNameMatch("7900 XTX", Preset.VRAM_24GB),
+            new GpuNameMatch("RTX 3090", Preset.VRAM_24GB),
+            new GpuNameMatch("RTX 4090", Preset.VRAM_24GB),
+            new GpuNameMatch("4060 TI", Preset.VRAM_16GB),
+            new GpuNameMatch("4070 TI SUPER", Preset.VRAM_16GB),
+            new GpuNameMatch("RX 6800", Preset.VRAM_16GB),
+            new GpuNameMatch("7800 XT", Preset.VRAM_16GB),
+            new GpuNameMatch("RTX 4070", Preset.VRAM_12GB),
+            new GpuNameMatch("6700 XT", Preset.VRAM_12GB),
+            new GpuNameMatch("7700 XT", Preset.VRAM_12GB),
+            new GpuNameMatch("RTX 4060", Preset.VRAM_8GB),
+            new GpuNameMatch("RX 6600", Preset.VRAM_8GB),
+            new GpuNameMatch("RX 7600", Preset.VRAM_8GB));
+
+    static DetectionResult matchKnownGpuName(String gpuNameOutput) {
+        if (gpuNameOutput == null || gpuNameOutput.isBlank()) {
+            return null;
+        }
+        String upper = gpuNameOutput.toUpperCase(java.util.Locale.ROOT);
+        for (GpuNameMatch candidate : KNOWN_GPU_NAMES) {
+            if (upper.contains(candidate.needle())) {
+                return new DetectionResult(candidate.preset(),
+                        "Matched known GPU '" + candidate.needle() + "' in reported name: "
+                                + gpuNameOutput.trim().replace("\n", " / "));
+            }
+        }
+        return null;
+    }
+
+    /** Best-effort OS-level GPU model name lookup, used only when {@code nvidia-smi} isn't available or
+     * didn't report VRAM. Returns {@code null} on any failure rather than throwing -- this is a fallback
+     * inside an already-best-effort detection path. */
+    private String detectGpuName() {
+        String os = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT);
+        try {
+            ProcessBuilder builder = os.contains("win")
+                    ? new ProcessBuilder("powershell", "-NoProfile", "-NonInteractive", "-Command",
+                            "(Get-CimInstance Win32_VideoController).Name")
+                    : new ProcessBuilder("sh", "-c", "lspci 2>/dev/null | grep -i 'vga\\|3d controller'");
+            Process process = builder.redirectErrorStream(true).start();
+            String output;
+            try (var in = process.inputReader(StandardCharsets.UTF_8)) {
+                output = in.lines().reduce("", (a, b) -> a + "\n" + b);
+            }
+            boolean finished = process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS);
+            return (finished && !output.isBlank()) ? output : null;
+        } catch (IOException | InterruptedException e) {
+            if (e instanceof InterruptedException) Thread.currentThread().interrupt();
+            return null;
+        }
     }
 
     static Preset mapVramToPreset(long vramMb) {

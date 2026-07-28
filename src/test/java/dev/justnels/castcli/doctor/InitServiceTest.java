@@ -118,6 +118,32 @@ class InitServiceTest {
     }
 
     @Test
+    void matchesAmdCardNamesToTheirDocumentedPreset() {
+        assertThat(InitService.matchKnownGpuName("AMD Radeon RX 6700 XT").preset())
+                .isEqualTo(InitService.Preset.VRAM_12GB);
+        assertThat(InitService.matchKnownGpuName("AMD Radeon RX 6600").preset())
+                .isEqualTo(InitService.Preset.VRAM_8GB);
+        assertThat(InitService.matchKnownGpuName("AMD Radeon RX 7900 XTX").preset())
+                .isEqualTo(InitService.Preset.VRAM_24GB);
+    }
+
+    @Test
+    void matchesMoreSpecificNvidiaVariantsBeforeTheGenericName() {
+        // "RTX 4060 Ti" must resolve to the 16GB Ti bucket, not the generic 8GB "RTX 4060" bucket.
+        assertThat(InitService.matchKnownGpuName("NVIDIA GeForce RTX 4060 Ti").preset())
+                .isEqualTo(InitService.Preset.VRAM_16GB);
+        assertThat(InitService.matchKnownGpuName("NVIDIA GeForce RTX 4060").preset())
+                .isEqualTo(InitService.Preset.VRAM_8GB);
+    }
+
+    @Test
+    void returnsNoMatchForUnknownOrBlankGpuNames() {
+        assertThat(InitService.matchKnownGpuName("Intel(R) UHD Graphics 630")).isNull();
+        assertThat(InitService.matchKnownGpuName(null)).isNull();
+        assertThat(InitService.matchKnownGpuName("  ")).isNull();
+    }
+
+    @Test
     void familyKeyIgnoresQuantizationAndInstructSuffixes() {
         assertThat(InitService.modelFamilyKey("qwen2.5-coder:7b-instruct-q4_K_M"))
                 .isEqualTo(InitService.modelFamilyKey("qwen2.5-coder:7b"))
