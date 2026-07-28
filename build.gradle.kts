@@ -43,7 +43,7 @@ dependencies {
     implementation("info.picocli:picocli:4.7.7")
     implementation("ch.qos.logback:logback-classic:1.5.18")
     implementation("org.xerial:sqlite-jdbc:3.51.2.0")
-    implementation(platform("io.opentelemetry:opentelemetry-bom:1.59.0"))
+    implementation(platform("io.opentelemetry:opentelemetry-bom:1.64.0"))
     implementation("io.opentelemetry:opentelemetry-api")
     implementation("io.opentelemetry:opentelemetry-sdk")
     implementation("io.opentelemetry:opentelemetry-exporter-otlp")
