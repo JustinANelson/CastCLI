@@ -60,52 +60,53 @@ Goal: make CastCLI usable as a transparent control plane for existing coding age
 
 #### R-001: OpenAI-compatible inbound gateway — P0
 
-**Status: In progress.** Phase 1 (non-streaming `/v1/chat/completions` and `/v1/models`, loopback-
-default with fail-closed bearer auth), Phase 2 (SSE streaming with cooperative, poll-based
-client-disconnect cancellation and optional `stream_options.include_usage`), and Phase 3
-(client-side tool passthrough: OpenAI `tools`/`tool_choice` are parsed and sent to the model, and any
-resulting tool calls are handed back to the caller unexecuted, non-streaming only) are done.
-Phase 4 (multi-turn history for the non-tool path) is also done: a request ending in a `role:"user"`
-message has its prior turns sent to the model as real `SystemMessage`/`UserMessage`/`AiMessage`
-entries (via `HarnessOrchestrator.run(task, history)` / `runStreaming(..., history)`) instead of a
-flattened text blob, while the current turn still flows through `TaskRequest.prompt()` so
-fastPath/routing/memory-augmentation heuristics are unaffected. A request that doesn't end in a user
-message falls back to the original whole-conversation flattening (non-regressive, just lower
-fidelity for that rare shape) rather than being rejected. When CastCLI's own server-side tools fire
-(the `AiServices` branch, keyed off `DefaultToolSelector`'s keyword heuristics), history is
-flattened and prepended to the prompt rather than sent as real messages, since `AiServices` only
-accepts a single prompt string -- carried forward as a gap rather than dropped silently.
+**Status: Substantially complete for `/v1/chat/completions`.** Implemented and tested: non-streaming
+and SSE-streaming responses; `/v1/models`; loopback-default binding that refuses to start on a
+non-loopback bind without a bearer token (fail-closed, not a warning); poll-based client-disconnect
+cancellation (~200ms bound) kept deliberately separate from provider-health bookkeeping, so a closed
+editor tab doesn't ding a provider's reliability score; client-side tool passthrough (`tools`/
+`tool_choice` parsed and sent to the model, resulting tool calls returned to the caller unexecuted,
+non-streaming only); and real multi-turn message history (system/user/assistant reconstructed as
+distinct messages, not a flattened blob) for requests ending in a `role:"user"` message, with a
+non-regressive flatten-fallback for the rare shape that doesn't.
 
-Known gaps carried forward: guardrail filtering on the streaming path is per-chunk only (a redacted
-pattern split across two streamed tokens is not caught); client-disconnect detection relies on the
-next attempted write failing, so a stalled/paused generation is not noticed until the next token
-attempt; combining `stream:true` with client `tools` is rejected (streaming tool-call argument
-deltas are not implemented); a forced named `tool_choice` is emulated by narrowing the tool list to
-one entry plus `REQUIRED`, since the underlying model client has no native per-function forcing; tool
-parameter JSON Schemas are passed through as opaque raw schema (verified to reach the wire intact in
-`JsonRawSchemaWireVerificationTest`) rather than validated by CastCLI itself; and CastCLI's own
-server-side tool path (as opposed to client-tool passthrough) still flattens history into the prompt
-string instead of sending real messages.
+Remaining scope:
 
-Add a locally hosted API surface so clients can adopt CastCLI by changing a base URL.
+- `/v1/responses` compatibility -- not started. Needed for Codex and any SDK client that targets the
+  Responses API specifically rather than Chat Completions.
+- Streaming tool-call argument deltas -- `stream:true` combined with client `tools` is currently
+  rejected outright rather than emitting incremental `tool_calls` deltas.
+- CastCLI's own server-side tool path (`AiServices`, distinct from client-tool passthrough above)
+  still flattens conversation history into the prompt string instead of sending real messages,
+  because `AiServices` only accepts a single prompt string. Closing this needs either an `AiServices`
+  overload that accepts a message list or a bespoke tool-execution loop built on the same raw
+  `ChatModel.chat()` path client-tool passthrough already uses.
+- Guardrail filtering on the streaming path is per-chunk only; a redacted pattern split across two
+  streamed tokens is not caught. A sliding-window buffer over recently streamed characters (rather
+  than filtering each chunk in isolation) would close this without giving up incremental delivery.
+- Promote gateway settings (`--port`/`--bind`/`--token`) from CLI-only flags into the versioned
+  configuration schema once R-006 lands, so a deployment doesn't have to pass a bearer token on a
+  command line or in shell history.
+- Protocol fixture tests driven by a real client SDK (e.g. the `openai` Python/Node package against a
+  local gateway instance) rather than only hand-built stub tests, so a client-library upgrade that
+  changes request shape gets caught before a user hits it.
+- Document Codex, Claude Code, Cursor, Continue, Aider, and generic OpenAI SDK configuration -- none
+  written yet; the implementation has only been manually smoke-tested against Ollama so far.
+- A dedicated threat-model review of the gateway (network exposure, auth bypass attempts, request
+  smuggling via the JSON body) before this item is marked Complete, per the 0.2 release gate below.
 
-Scope:
+Acceptance criteria (remaining):
 
-- Implement `/v1/chat/completions` and `/v1/responses` compatibility.
-- Support non-streaming and streaming text responses.
-- Support tool definitions, tool calls, and streamed tool-call arguments.
-- Preserve request IDs, usage information, errors, cancellation, and trace correlation.
-- Map routing, budget, reliability, privacy, and approval failures to stable API errors.
-- Bind to loopback by default; require explicit configuration and authentication for non-loopback use.
-- Document Codex, Claude Code, Cursor, Continue, Aider, and generic OpenAI SDK configuration.
-
-Acceptance criteria:
-
-- A supported client can use CastCLI by changing only endpoint/authentication configuration.
 - Streaming tool calls pass integration tests and do not bypass approval gates.
-- Disconnecting a client cancels downstream work within a bounded interval.
-- The gateway passes protocol fixtures for supported request and response fields.
-- Network exposure and authentication behavior have dedicated security tests.
+- The gateway passes protocol fixtures driven by a real client SDK, not only hand-built requests.
+- At least one real, documented client completes an end-to-end streaming + tool-call flow.
+
+**Recommendation:** with chat/completions substantially working, the highest-leverage next step is
+not more gateway surface area -- it's R-004 (`cast connect`), which turns "a client *can* point here"
+into "a client is *one command away* from pointing here." Consider pulling R-004 forward ahead of its
+current P1/no-release ordering once the threat-model review above is done. `/v1/responses` and
+streaming tool-call deltas are real gaps but lower-urgency: no client has been blocked on them yet
+during this build's own manual testing, whereas every adoption story depends on R-004.
 
 #### R-002: Provider capability registry and discovery — P0
 
@@ -148,6 +149,9 @@ Acceptance criteria:
 - Native support remains a capability enhancement, not a cloud requirement.
 
 #### R-004: Integration generator — P1
+
+*(See R-001's recommendation: with the gateway substantially working, consider pulling this forward
+ahead of R-002/R-003 -- it is what actually turns gateway capability into client adoption.)*
 
 Add `cast connect <client>` for `codex`, `claude`, `cursor`, `continue`, `aider`, and generic SDK use.
 
@@ -254,6 +258,9 @@ Acceptance criteria:
 
 #### R-103: Repository-aware token compiler — P0
 
+*(Recommendation: start with one language end-to-end before generalizing the AST-aware slicing --
+the value of this item is in depth of context reduction, not breadth of language coverage on day one.)*
+
 - Add AST- and symbol-aware slicing for supported languages.
 - Add call-graph/change-impact expansion and test-to-production-code mapping.
 - Prefer Git-diff-first context selection.
@@ -347,16 +354,6 @@ quantization, runtime, hardware, and benchmark version; invalidate results after
 must distinguish declared, probed, and benchmarked capabilities, and routing decisions should cite relevant
 benchmark evidence. Benchmarks remain offline unless cloud use is explicitly requested.
 
-#### R-202: Repository-specific calibration and feedback — P0
-
-- Learn task-class thresholds from validator outcomes, explicit feedback, latency, and cost.
-- Support opt-in, repository-local calibration data.
-- Protect against feedback poisoning, sparse samples, and sudden drift.
-- Retain a deterministic heuristic fallback.
-- Version learned policies and support instant rollback.
-- Require an adaptive policy to meet declared quality SLOs against the heuristic baseline before activation.
-- Keep raw repository content local and explain which evidence influenced a decision.
-
 #### R-203: Quality, cost, privacy, and latency SLOs — P0
 
 Allow requests such as:
@@ -377,16 +374,6 @@ during optimization, and report every SLO as achieved, missed, indeterminate, or
 - Export machine-readable results for CI release gates.
 - Keep dataset provenance reviewable and never conflate estimated savings with measured savings.
 
-#### R-205: Semantic response cache with coding-safe invalidation — P1
-
-- Implement exact caching first; allow semantic reuse only for explicitly safe task classes.
-- Key entries by repository state, context hashes, model/provider, prompts, tools, policy, parameters, and
-  validator version.
-- Isolate namespaces by project, identity, classification, and provider.
-- Do not semantically reuse patches, security decisions, live diagnostics, or side-effecting tool results.
-- Revalidate cached structured results when inexpensive.
-- Keep cache hits visible in traces, receipts, usage, and savings reports.
-
 #### R-206: Session- and goal-level economics — P1
 
 - Attribute usage to session, goal, task, agent, provider, validator, tool, and cache.
@@ -398,9 +385,9 @@ during optimization, and report every SLO as achieved, missed, indeterminate, or
 
 #### 0.4 release gate
 
-- Adaptive activation requires a versioned backtest and rollback target.
 - Benchmarks and SLO reports are reproducible within documented tolerances.
-- Security review covers feedback poisoning, routing manipulation, and cache isolation.
+- Backtesting results (R-204) are reviewable with documented dataset provenance.
+- Security review covers routing manipulation resistance (S-005).
 
 ### 0.5 — Team, fleet, and regulated operation
 
@@ -448,13 +435,6 @@ Goal: support teams and on-premises compute without weakening the local-first tr
 - Associate output with commit, dirty state, dependencies, model identity, and receipt.
 - Maintain SBOMs and signed release provenance.
 - Never allow CI mode to fall back to interactive auto-approval.
-
-#### R-306: Team operations console — P2
-
-Provide an optional self-hosted local/on-premises UI for model/worker health, traces, routing explanations,
-egress manifests, approvals, budgets, local-offload rate, SLOs, failed validation, policy drift, audit export,
-retention, and incident investigation. Essential operations remain available through CLI/API. Full prompt and
-source display is disabled by default and policy-controlled.
 
 #### 0.5 release gate
 
@@ -559,12 +539,6 @@ disableable, and auditable.
 - Publish a machine-readable model/capability catalog format.
 - Do not claim compatibility when source policy semantics cannot be represented.
 
-### E-003: Agent and workflow protocol support — P2
-
-- Track relevant MCP and agent-to-agent standards.
-- Add protocols only when identity, authority, cancellation, accounting, and provenance survive translation.
-- Keep internal orchestration provider- and protocol-neutral.
-
 ## Success metrics
 
 - Validated task success rate by task class.
@@ -598,14 +572,41 @@ CastCLI will deliberately avoid:
 - Sending raw repositories to cloud merely because a frontier tier was selected.
 - Allowing adaptive optimization to weaken hard privacy, authority, quality, or budget constraints.
 
+## Removed from consideration
+
+The following were previously proposed roadmap items, cut outright rather than merely deprioritized,
+because they cut against the non-goals above or the product's current stage. Recorded here so a
+future reader doesn't wonder whether they were simply forgotten.
+
+- **Repository-specific calibration and feedback (learned routing thresholds).** Directly in tension
+  with "claiming learned routing without measured outcomes" -- the risk surface (feedback poisoning,
+  drift, an adaptive policy silently diverging from the heuristic baseline) is high for a feature
+  whose payoff over well-tuned heuristics plus R-201 benchmarking and R-204 backtesting is unproven.
+- **Semantic response cache with coding-safe invalidation.** Matches the non-goal on premature
+  semantic caching for code edits almost verbatim. Exact-match caching (a much smaller, safer idea)
+  can still be pursued later if a concrete need appears, but it isn't worth a standing roadmap item
+  ahead of that need.
+- **Team operations console.** A dedicated local UI is a large investment for a single-user-first,
+  CLI/API-first product at this stage; U-002's local observability UI already covers the traces/costs/
+  health surface an operator actually needs day to day. Revisit only if R-301/R-302 team adoption
+  creates real demand for a console specifically.
+- **Agent and workflow protocol support (tracking MCP/agent-to-agent standards).** Framed as "track
+  standards and adopt when ready," which isn't an actionable feature -- it's a watching brief. Nothing
+  stops picking this back up if a specific protocol becomes unavoidable, but it doesn't belong in a
+  roadmap of things to build.
+
 ## First three product bets
 
 If development capacity requires narrowing the roadmap, implement these in order:
 
-1. **Inbound compatibility gateway** so existing coding agents can adopt CastCLI without changing harnesses.
+1. **Inbound compatibility gateway** so existing coding agents can adopt CastCLI without changing
+   harnesses. *(Substantially complete for `/v1/chat/completions`; see R-001's remaining scope --
+   `/v1/responses`, streaming tool-call deltas, client documentation, and a threat-model review.)*
 2. **Verified local-first escalation** so savings are backed by outcomes rather than routing guesses.
+   *(Not started; R-101. This is the natural next major bet once R-001's remaining scope and R-004's
+   client-onboarding flow are addressed.)*
 3. **Context Firewall and proof-carrying receipts** so cloud escalation is minimal, explainable, auditable,
-   and reproducible.
+   and reproducible. *(Not started; R-102/R-104.)*
 
 Together these move CastCLI from a capable orchestration harness to a product with a distinct and defensible
 reason to exist.
