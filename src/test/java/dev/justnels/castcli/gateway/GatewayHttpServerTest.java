@@ -9,6 +9,10 @@ import dev.justnels.castcli.config.RoutingConfig;
 import dev.justnels.castcli.config.ToolConfig;
 import dev.justnels.castcli.orchestration.HarnessOrchestrator;
 import dev.justnels.castcli.orchestration.TaskRequest;
+import dev.langchain4j.agent.tool.ToolExecutionRequest;
+import dev.langchain4j.agent.tool.ToolSpecification;
+import dev.langchain4j.data.message.ChatMessage;
+import dev.langchain4j.model.chat.request.ToolChoice;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -250,15 +254,6 @@ class GatewayHttpServerTest {
     }
 
     @Test
-    void rejectsClientSuppliedTools() throws Exception {
-        HttpResponse<String> response = post("""
-                {"messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"x"}}]}
-                """);
-        assertThat(response.statusCode()).isEqualTo(400);
-        assertThat(response.body()).contains("tools");
-    }
-
-    @Test
     void rejectsEmptyMessages() throws Exception {
         HttpResponse<String> response = post("""
                 {"messages":[]}
@@ -336,5 +331,84 @@ class GatewayHttpServerTest {
                 .build();
         HttpResponse<String> rightAuthResponse = httpClient.send(rightAuth, HttpResponse.BodyHandlers.ofString());
         assertThat(rightAuthResponse.statusCode()).isEqualTo(200);
+    }
+
+    @Test
+    void clientToolsReturnsUnexecutedToolCallsWithRealFinishReason() throws Exception {
+        tearDown();
+        HarnessConfig config = config();
+        ToolExecutionRequest toolCall = ToolExecutionRequest.builder()
+                .id("call_abc").name("get_weather").arguments("{\"city\":\"Paris\"}").build();
+        HarnessOrchestrator.ClientToolOutcome outcome = new HarnessOrchestrator.ClientToolOutcome(
+                config.providers().getFirst(), null, List.of(toolCall), "tool_calls", 5L, 10L, 2L, 0.0);
+        startServer("127.0.0.1", null, new StubOrchestrator(config, null) {
+            @Override
+            public ClientToolOutcome runWithClientTools(TaskRequest task, List<ChatMessage> messages,
+                                                          List<ToolSpecification> toolSpecifications, ToolChoice toolChoice) {
+                return outcome;
+            }
+        });
+
+        HttpResponse<String> response = post("""
+                {"messages":[{"role":"user","content":"weather in Paris?"}],
+                 "tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object","properties":{"city":{"type":"string"}}}}}]}
+                """);
+
+        assertThat(response.statusCode()).isEqualTo(200);
+        JsonNode json = mapper.readTree(response.body());
+        JsonNode message = json.path("choices").get(0).path("message");
+        assertThat(message.path("content").isNull()).isTrue();
+        assertThat(message.path("tool_calls").get(0).path("id").asText()).isEqualTo("call_abc");
+        assertThat(message.path("tool_calls").get(0).path("type").asText()).isEqualTo("function");
+        assertThat(message.path("tool_calls").get(0).path("function").path("name").asText()).isEqualTo("get_weather");
+        assertThat(message.path("tool_calls").get(0).path("function").path("arguments").asText())
+                .isEqualTo("{\"city\":\"Paris\"}");
+        assertThat(json.path("choices").get(0).path("finish_reason").asText()).isEqualTo("tool_calls");
+    }
+
+    @Test
+    void clientToolsCanAnswerWithTextInsteadOfCalling() throws Exception {
+        tearDown();
+        HarnessConfig config = config();
+        HarnessOrchestrator.ClientToolOutcome outcome = new HarnessOrchestrator.ClientToolOutcome(
+                config.providers().getFirst(), "It's sunny.", List.of(), "stop", 5L, 8L, 3L, 0.0);
+        startServer("127.0.0.1", null, new StubOrchestrator(config, null) {
+            @Override
+            public ClientToolOutcome runWithClientTools(TaskRequest task, List<ChatMessage> messages,
+                                                          List<ToolSpecification> toolSpecifications, ToolChoice toolChoice) {
+                return outcome;
+            }
+        });
+
+        HttpResponse<String> response = post("""
+                {"messages":[{"role":"user","content":"weather in Paris?"}],
+                 "tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object","properties":{}}}}]}
+                """);
+
+        assertThat(response.statusCode()).isEqualTo(200);
+        JsonNode json = mapper.readTree(response.body());
+        JsonNode message = json.path("choices").get(0).path("message");
+        assertThat(message.path("content").asText()).isEqualTo("It's sunny.");
+        assertThat(message.has("tool_calls")).isFalse();
+        assertThat(json.path("choices").get(0).path("finish_reason").asText()).isEqualTo("stop");
+    }
+
+    @Test
+    void rejectsStreamingCombinedWithClientTools() throws Exception {
+        HttpResponse<String> response = post("""
+                {"messages":[{"role":"user","content":"hi"}],"stream":true,
+                 "tools":[{"type":"function","function":{"name":"noop"}}]}
+                """);
+        assertThat(response.statusCode()).isEqualTo(400);
+        assertThat(response.body()).contains("stream=true");
+    }
+
+    @Test
+    void clientToolsRejectsMalformedToolDefinition() throws Exception {
+        HttpResponse<String> response = post("""
+                {"messages":[{"role":"user","content":"hi"}],
+                 "tools":[{"type":"unsupported_type"}]}
+                """);
+        assertThat(response.statusCode()).isEqualTo(400);
     }
 }

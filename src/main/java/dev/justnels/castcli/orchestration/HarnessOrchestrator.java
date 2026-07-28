@@ -21,12 +21,18 @@ import dev.justnels.castcli.tools.MemoryTools;
 import dev.justnels.castcli.tools.SemanticSearchTools;
 import dev.justnels.castcli.tools.ToolSelector;
 import dev.justnels.castcli.tools.WorkspaceTools;
+import dev.langchain4j.agent.tool.ToolExecutionRequest;
+import dev.langchain4j.agent.tool.ToolSpecification;
+import dev.langchain4j.data.message.AiMessage;
+import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.chat.StreamingChatModel;
 import dev.langchain4j.model.chat.request.ChatRequest;
+import dev.langchain4j.model.chat.request.ToolChoice;
 import dev.langchain4j.model.chat.response.ChatResponse;
 import dev.langchain4j.model.chat.response.StreamingChatResponseHandler;
+import dev.langchain4j.model.output.FinishReason;
 import dev.langchain4j.model.output.TokenUsage;
 import dev.langchain4j.service.AiServices;
 import dev.langchain4j.service.Result;
@@ -35,6 +41,7 @@ import dev.langchain4j.service.tool.ToolProvider;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
@@ -76,6 +83,33 @@ public class HarnessOrchestrator {
 
         Outcome withTraceId(String id) {
             return new Outcome(provider, answer, toolsSelected, toolsUsed, durationMs, fastPath,
+                    inputTokens, outputTokens, estimatedCostUsd, id);
+        }
+    }
+
+    /**
+     * Result of {@link #runWithClientTools}: either a text answer ({@code toolCalls} empty) or a
+     * set of tool calls the model wants the <em>caller</em> to execute ({@code answer} null). Unlike
+     * {@link Outcome}, tool calls here are never executed by CastCLI -- see {@link #runWithClientTools}.
+     */
+    public record ClientToolOutcome(
+            ProviderConfig provider,
+            String answer,
+            List<ToolExecutionRequest> toolCalls,
+            String finishReason,
+            long durationMs,
+            long inputTokens,
+            long outputTokens,
+            double estimatedCostUsd,
+            String traceId) {
+        public ClientToolOutcome(ProviderConfig provider, String answer, List<ToolExecutionRequest> toolCalls,
+                                  String finishReason, long durationMs, long inputTokens, long outputTokens,
+                                  double estimatedCostUsd) {
+            this(provider, answer, toolCalls, finishReason, durationMs, inputTokens, outputTokens, estimatedCostUsd, null);
+        }
+
+        ClientToolOutcome withTraceId(String id) {
+            return new ClientToolOutcome(provider, answer, toolCalls, finishReason, durationMs,
                     inputTokens, outputTokens, estimatedCostUsd, id);
         }
     }
@@ -181,6 +215,119 @@ public class HarnessOrchestrator {
                 throw failure;
             }
         }
+    }
+
+    /**
+     * Runs a chat turn with client-supplied (OpenAI-style) tool specifications, without executing
+     * any of them: the model may either answer with text or request tool calls, and either way
+     * CastCLI hands the result straight back to the caller. This is a deliberately different control
+     * flow from {@link #run(TaskRequest)}'s server-side {@code AiServices}-executed tools -- those are
+     * CastCLI's own {@code ApprovalGate}-gated tools; these belong to and are executed by the caller
+     * (e.g. the OpenAI-compatible gateway's client). The two are not combined in one call. Routing
+     * reuses {@code task}'s workload/tier/strictness, but {@code messages} (not {@code task.prompt()})
+     * is what is actually sent to the model -- {@code task.prompt()} only drives routing signals and
+     * telemetry annotation. There is no fallback across providers mid-tool-call: a failure with the
+     * routed provider fails the request rather than retrying with a different one, matching the
+     * existing single-candidate rule for server-side tool calls in {@link #runCore}.
+     */
+    public ClientToolOutcome runWithClientTools(TaskRequest task, List<ChatMessage> messages,
+                                                  List<ToolSpecification> toolSpecifications, ToolChoice toolChoice) {
+        Attributes attributes = Attributes.builder()
+                .put("gen_ai.operation.name", "chat")
+                .put("castcli.client_tools", true)
+                .put("castcli.workload", task.workload().name())
+                .build();
+        telemetry.request(attributes);
+        try (CastTelemetry.SpanScope span = telemetry.span("castcli.request").attributes(attributes)) {
+            telemetry.annotatePrompt(span, task.prompt());
+            try {
+                ClientToolOutcome outcome = runClientToolsCore(task, messages, toolSpecifications, toolChoice);
+                span.attribute("gen_ai.provider.name", outcome.provider().id())
+                        .attribute("gen_ai.request.model", outcome.provider().modelName())
+                        .attribute("gen_ai.usage.input_tokens", outcome.inputTokens())
+                        .attribute("gen_ai.usage.output_tokens", outcome.outputTokens())
+                        .attribute("castcli.estimated.cost.usd", outcome.estimatedCostUsd());
+                telemetry.modelUsage(outcome.inputTokens(), outcome.outputTokens(), outcome.estimatedCostUsd(),
+                        outcome.durationMs(), providerAttributes(outcome.provider()));
+                return outcome.withTraceId(span.traceId());
+            } catch (RuntimeException failure) {
+                span.error(failure);
+                telemetry.failure(attributes);
+                throw failure;
+            }
+        }
+    }
+
+    private ClientToolOutcome runClientToolsCore(TaskRequest task, List<ChatMessage> messages,
+                                                   List<ToolSpecification> toolSpecifications, ToolChoice toolChoice) {
+        long startTime = System.currentTimeMillis();
+        List<Object> toolsForRouting = List.copyOf(toolSpecifications);
+        List<RoutingCandidate> ranked = router.rank(task, toolsForRouting);
+        if (ranked.isEmpty()) {
+            router.route(task, toolsForRouting);
+            throw new IllegalStateException("No provider candidates available");
+        }
+        // No cross-provider fallback mid-tool-call, same rule runCore applies whenever tools are
+        // present: a partially-executed tool round-trip against provider A cannot be silently
+        // retried against provider B.
+        ProviderConfig provider = orderedFallbacks(ranked).getFirst();
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(config.reliability().requestDeadlineSeconds());
+        return reliabilityExecutor.execute(provider,
+                () -> executeClientTools(messages, toolSpecifications, toolChoice, provider, startTime), false, deadline);
+    }
+
+    private ClientToolOutcome executeClientTools(List<ChatMessage> messages, List<ToolSpecification> toolSpecifications,
+                                                   ToolChoice toolChoice, ProviderConfig provider, long startTime) {
+        try (var span = telemetry.span("gen_ai.chat")
+                .attribute("gen_ai.operation.name", "chat")
+                .attribute("gen_ai.provider.name", provider.id())
+                .attribute("gen_ai.request.model", provider.modelName())) {
+        ChatModel model = modelFactory.create(provider);
+        ChatRequest.Builder requestBuilder = ChatRequest.builder()
+                .messages(messages)
+                .toolSpecifications(toolSpecifications);
+        if (toolChoice != null) {
+            requestBuilder.toolChoice(toolChoice);
+        }
+        ChatResponse response = model.chat(requestBuilder.build());
+        AiMessage aiMessage = response.aiMessage();
+
+        long duration = System.currentTimeMillis() - startTime;
+        TokenUsage usage = response.metadata() == null ? null : response.metadata().tokenUsage();
+        long inputTokens = tokensOrZero(usage == null ? null : usage.inputTokenCount());
+        long outputTokens = tokensOrZero(usage == null ? null : usage.outputTokenCount());
+        double cost = provider.estimatedCostUsd(inputTokens, outputTokens);
+        FinishReason finishReason = response.metadata() == null ? null : response.metadata().finishReason();
+        String finishReasonText = mapFinishReason(finishReason, aiMessage.hasToolExecutionRequests());
+        span.attribute("gen_ai.usage.input_tokens", inputTokens)
+                .attribute("gen_ai.usage.output_tokens", outputTokens);
+
+        if (aiMessage.hasToolExecutionRequests()) {
+            // Some OpenAI-compatible providers (notably Ollama) omit the tool-call id entirely; a
+            // null id there would make it impossible for the caller to match a later "tool" role
+            // result back to this call, so synthesize one rather than passing null through.
+            List<ToolExecutionRequest> toolCalls = aiMessage.toolExecutionRequests().stream()
+                    .map(request -> request.id() == null || request.id().isBlank()
+                            ? request.toBuilder().id("call_" + UUID.randomUUID()).build()
+                            : request)
+                    .toList();
+            return new ClientToolOutcome(provider, null, toolCalls, finishReasonText, duration, inputTokens, outputTokens, cost);
+        }
+        return new ClientToolOutcome(provider, GuardrailFilter.filter(aiMessage.text()), List.of(), finishReasonText,
+                duration, inputTokens, outputTokens, cost);
+        }
+    }
+
+    private static String mapFinishReason(FinishReason reason, boolean hasToolExecutionRequests) {
+        if (reason == null) {
+            return hasToolExecutionRequests ? "tool_calls" : "stop";
+        }
+        return switch (reason) {
+            case TOOL_EXECUTION -> "tool_calls";
+            case LENGTH -> "length";
+            case CONTENT_FILTER -> "content_filter";
+            case STOP, OTHER -> hasToolExecutionRequests ? "tool_calls" : "stop";
+        };
     }
 
     private Outcome runCore(TaskRequest task) {

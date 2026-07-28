@@ -2,6 +2,7 @@ package dev.justnels.castcli.gateway;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
@@ -11,19 +12,26 @@ import dev.justnels.castcli.orchestration.Workload;
 import dev.justnels.castcli.reliability.BudgetExceededException;
 import dev.justnels.castcli.reliability.ProviderExecutionException;
 import dev.justnels.castcli.security.GuardrailFilter;
+import dev.langchain4j.agent.tool.ToolExecutionRequest;
+import dev.langchain4j.agent.tool.ToolSpecification;
+import dev.langchain4j.data.message.ChatMessage;
 
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Handler for {@code POST /v1/chat/completions}. Supports non-streaming responses and, as of
- * Phase 2, SSE streaming (no client-tool passthrough on either path). Flattens the OpenAI
- * {@code messages[]} array into a single prompt (multi-turn fidelity is deferred to a later phase)
- * and routes it through the same {@link HarnessOrchestrator} calls the {@code ask} CLI command uses.
+ * Handler for {@code POST /v1/chat/completions}. Supports non-streaming responses, SSE streaming
+ * (Phase 2), and client-side tool passthrough (Phase 3, non-streaming only -- combining streaming
+ * with tools is rejected). When no tools are involved, the OpenAI {@code messages[]} array is
+ * flattened into a single prompt (multi-turn fidelity is deferred to a later phase); when tools are
+ * involved, {@link ClientToolSupport} reconstructs the real message list instead, since tool-call
+ * round trips cannot survive flattening. Routes through the same {@link HarnessOrchestrator} calls
+ * the {@code ask} CLI command uses.
  */
 final class ChatCompletionsHandler implements HttpHandler {
 
@@ -50,9 +58,13 @@ final class ChatCompletionsHandler implements HttpHandler {
             return;
         }
 
-        if (hasContent(request.path("tools")) || hasContent(request.path("tool_choice"))) {
-            GatewayErrors.send(exchange, mapper, 400, "invalid_request_error",
-                    "Client-supplied 'tools'/'tool_choice' are not yet supported by this CastCLI gateway build.");
+        if (hasContent(request.path("tools"))) {
+            if (request.path("stream").asBoolean(false)) {
+                GatewayErrors.send(exchange, mapper, 400, "invalid_request_error",
+                        "Combining stream=true with client-supplied 'tools' is not yet supported by this CastCLI gateway build.");
+                return;
+            }
+            handleWithClientTools(exchange, request);
             return;
         }
 
@@ -79,6 +91,97 @@ final class ChatCompletionsHandler implements HttpHandler {
         } catch (RuntimeException e) {
             ErrorMapping mapping = mapException(e);
             GatewayErrors.send(exchange, mapper, mapping.status(), mapping.type(), mapping.message());
+        }
+    }
+
+    /**
+     * Handles a request that supplies client-side {@code tools}: the model may either answer with
+     * text or request tool calls, and either way the result is handed straight back to the client
+     * unexecuted -- see {@link HarnessOrchestrator#runWithClientTools} for why this is a distinct
+     * control flow from CastCLI's own server-side tools.
+     */
+    private void handleWithClientTools(HttpExchange exchange, JsonNode request) throws IOException {
+        List<ChatMessage> messages;
+        List<ToolSpecification> tools;
+        ClientToolSupport.ToolChoiceResolution resolution;
+        try {
+            messages = ClientToolSupport.toChatMessages(request.path("messages"));
+            tools = ClientToolSupport.parseToolSpecifications(request.path("tools"));
+            resolution = ClientToolSupport.resolveToolChoice(request.path("tool_choice"), tools);
+        } catch (IllegalArgumentException e) {
+            GatewayErrors.send(exchange, mapper, 400, "invalid_request_error", e.getMessage());
+            return;
+        }
+
+        try {
+            TaskRequest task = new TaskRequest(routingPrompt(request.path("messages")), Workload.AUTO, null);
+            HarnessOrchestrator.ClientToolOutcome outcome =
+                    orchestrator.runWithClientTools(task, messages, resolution.tools(), resolution.toolChoice());
+            sendClientToolCompletion(exchange, outcome);
+        } catch (RuntimeException e) {
+            ErrorMapping mapping = mapException(e);
+            GatewayErrors.send(exchange, mapper, mapping.status(), mapping.type(), mapping.message());
+        }
+    }
+
+    /**
+     * Builds a best-effort prompt for routing signals/telemetry only -- never sent to the model
+     * (the reconstructed {@link ChatMessage} list is). Unlike {@link #flattenMessages}, this must
+     * tolerate the non-textual content that assistant tool-call and tool-result messages carry,
+     * since a real tool-calling conversation's later turns are full of exactly that.
+     */
+    private static String routingPrompt(JsonNode messages) {
+        StringBuilder prompt = new StringBuilder();
+        for (JsonNode message : messages) {
+            JsonNode content = message.path("content");
+            if (content.isTextual() && !content.asText().isBlank()) {
+                if (!prompt.isEmpty()) {
+                    prompt.append("\n\n");
+                }
+                prompt.append(message.path("role").asText("user")).append(": ").append(content.asText());
+            }
+        }
+        return prompt.isEmpty() ? "[tool call conversation]" : prompt.toString();
+    }
+
+    private void sendClientToolCompletion(HttpExchange exchange, HarnessOrchestrator.ClientToolOutcome outcome)
+            throws IOException {
+        ObjectNode response = mapper.createObjectNode();
+        response.put("id", "chatcmpl-" + UUID.randomUUID());
+        response.put("object", "chat.completion");
+        response.put("created", Instant.now().getEpochSecond());
+        response.put("model", outcome.provider().modelName());
+
+        ObjectNode choice = response.putArray("choices").addObject();
+        choice.put("index", 0);
+        ObjectNode message = choice.putObject("message");
+        message.put("role", "assistant");
+        if (outcome.toolCalls().isEmpty()) {
+            message.put("content", outcome.answer());
+        } else {
+            message.putNull("content");
+            ArrayNode toolCalls = message.putArray("tool_calls");
+            for (ToolExecutionRequest toolCall : outcome.toolCalls()) {
+                ObjectNode toolCallNode = toolCalls.addObject();
+                toolCallNode.put("id", toolCall.id());
+                toolCallNode.put("type", "function");
+                ObjectNode function = toolCallNode.putObject("function");
+                function.put("name", toolCall.name());
+                function.put("arguments", toolCall.arguments());
+            }
+        }
+        choice.put("finish_reason", outcome.finishReason());
+
+        ObjectNode usage = response.putObject("usage");
+        usage.put("prompt_tokens", outcome.inputTokens());
+        usage.put("completion_tokens", outcome.outputTokens());
+        usage.put("total_tokens", outcome.inputTokens() + outcome.outputTokens());
+
+        byte[] bytes = mapper.writeValueAsBytes(response);
+        exchange.getResponseHeaders().set("Content-Type", "application/json; charset=UTF-8");
+        exchange.sendResponseHeaders(200, bytes.length);
+        try (OutputStream os = exchange.getResponseBody()) {
+            os.write(bytes);
         }
     }
 

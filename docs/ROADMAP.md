@@ -60,14 +60,21 @@ Goal: make CastCLI usable as a transparent control plane for existing coding age
 
 #### R-001: OpenAI-compatible inbound gateway — P0
 
-**Status: In progress.** Phase 1 (non-streaming `/v1/chat/completions` and `/v1/models`, no client
-tool passthrough, loopback-default with fail-closed bearer auth) and Phase 2 (SSE streaming with
-cooperative, poll-based client-disconnect cancellation and optional `stream_options.include_usage`)
-are done. Client-side tool passthrough and multi-turn history remain as follow-on phases before this
-item can move to Complete. Known gaps carried forward: guardrail filtering on the streaming path is
-per-chunk only (a redacted pattern split across two streamed tokens is not caught); client-disconnect
-detection relies on the next attempted write failing, so a stalled/paused generation is not noticed
-until the next token attempt.
+**Status: In progress.** Phase 1 (non-streaming `/v1/chat/completions` and `/v1/models`, loopback-
+default with fail-closed bearer auth), Phase 2 (SSE streaming with cooperative, poll-based
+client-disconnect cancellation and optional `stream_options.include_usage`), and Phase 3
+(client-side tool passthrough: OpenAI `tools`/`tool_choice` are parsed and sent to the model, and any
+resulting tool calls are handed back to the caller unexecuted, non-streaming only) are done.
+Multi-turn history for the non-tool path remains a follow-on phase (the tool-calling path already
+reconstructs full message history, since tool-call round trips cannot survive flattening). Known
+gaps carried forward: guardrail filtering on the streaming path is per-chunk only (a redacted
+pattern split across two streamed tokens is not caught); client-disconnect detection relies on the
+next attempted write failing, so a stalled/paused generation is not noticed until the next token
+attempt; combining `stream:true` with client `tools` is rejected (streaming tool-call argument
+deltas are not implemented); a forced named `tool_choice` is emulated by narrowing the tool list to
+one entry plus `REQUIRED`, since the underlying model client has no native per-function forcing;
+and tool parameter JSON Schemas are passed through as opaque raw schema (verified to reach the wire
+intact in `JsonRawSchemaWireVerificationTest`) rather than validated by CastCLI itself.
 
 Add a locally hosted API surface so clients can adopt CastCLI by changing a base URL.
 
