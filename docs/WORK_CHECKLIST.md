@@ -2,40 +2,34 @@
 
 ## Current objective
 
-Resolve the MCP delegation latency, context-overflow, retry, output-size, and telemetry issues observed in the July 2026 implementation session.
+Implement high-impact features: `cast connect` client integration generator (R-004) and resilient dynamic HTTP indexing timeouts/batching.
 
 ## Checklist
 
-- [x] Budget and partition delegation input before repository retrieval exceeds the local context window.
-- [x] Bound search results, individual lines, logs, diffs, files, and delegated responses.
-- [x] Add hierarchical summarization for multi-file requests.
-- [x] Enforce a short total MCP delegation deadline and one provider attempt.
-- [x] Suppress identical failed requests and signal direct-execution fallback.
-- [x] Report per-tool p50/p95 latency, timeout, context-rejection, and fallback counts.
-- [x] Add regression tests and document the new behavior and tuning limits.
-- [x] Run focused tests, full validation, diff review, and the delegation audit.
+- [x] Create `ConnectService` and client connectors (`claude`, `codex`, `cursor`, `continue`, `aider`).
+- [x] Add Picocli `Connect` subcommand (`CastCli.ConnectCmd`) with `--check`, `--dry-run`, `--disconnect`, `--force`, `--list`.
+- [x] Add unit tests for `ConnectService` in `ConnectServiceTest`.
+- [x] Add dynamic batch split-and-retry logic for vector indexing in `WorkspaceEmbeddingIndex`.
+- [x] Verify implementation with `.\gradlew.bat test`, `.\gradlew.bat check`, `git diff --check`, and `mcp-usage` audit.
 
 ## Blockers and open decisions
 
-None. The installed distribution has been refreshed. Existing MCP processes must restart to load it.
+None. Feature implementations complete and verified.
 
 ## Next action
 
-Restart the MCP client/server session so it launches the refreshed distribution.
+Summary reported to user. Ready for additional tasks.
 
 ## Relevant paths
 
-- `src/main/java/dev/justnels/castcli/mcp/`
-- `src/main/java/dev/justnels/castcli/tools/WorkspaceTools.java`
-- `src/test/java/dev/justnels/castcli/mcp/`
-- `src/test/java/dev/justnels/castcli/tools/`
-- `docs/CODEX_MCP.md`
+- `src/main/java/dev/justnels/castcli/connect/`
+- `src/main/java/dev/justnels/castcli/CastCli.java`
+- `src/main/java/dev/justnels/castcli/index/WorkspaceEmbeddingIndex.java`
+- `src/test/java/dev/justnels/castcli/connect/`
 
 ## Verification status
 
-- Focused MCP delegation, deadline, retry-suppression, telemetry, and workspace-bound tests: passed.
-- Forced full `check`: passed, including all tests and unchanged JaCoCo gates.
-- Checkstyle: passed with one unrelated pre-existing warning in `JsonRawSchemaWireVerificationTest`.
-- `git diff --check`: passed with expected Windows line-ending notices only.
-- Delegation audit: passed and rendered the new per-tool p50/p95 and failure counters.
-- `installDist`: refreshed successfully.
+- `.\gradlew.bat test`: passed (all 296 unit tests passed).
+- `.\gradlew.bat check`: passed (checkstyle & JaCoCo 70%+ instructions coverage verified).
+- `git diff --check`: passed.
+- `mcp-usage` delegation audit: passed ($0.63041 estimated avoided spend recorded).

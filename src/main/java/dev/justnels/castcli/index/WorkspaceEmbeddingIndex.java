@@ -424,8 +424,8 @@ public final class WorkspaceEmbeddingIndex {
     private static final int MAX_EMBEDDING_BATCH_SIZE = 64;
 
     private Response<List<Embedding>> embedSegmentsInBatches(List<TextSegment> segments) {
-        if (segments.size() <= MAX_EMBEDDING_BATCH_SIZE) {
-            return embeddingModel.embedAll(segments);
+        if (segments.isEmpty()) {
+            return Response.from(List.of());
         }
 
         List<Embedding> allEmbeddings = new ArrayList<>(segments.size());
@@ -434,7 +434,7 @@ public final class WorkspaceEmbeddingIndex {
 
         for (int i = 0; i < segments.size(); i += MAX_EMBEDDING_BATCH_SIZE) {
             List<TextSegment> batch = segments.subList(i, Math.min(i + MAX_EMBEDDING_BATCH_SIZE, segments.size()));
-            Response<List<Embedding>> batchResponse = embeddingModel.embedAll(batch);
+            Response<List<Embedding>> batchResponse = embedSegmentsWithResilience(batch);
             allEmbeddings.addAll(batchResponse.content());
             if (batchResponse.tokenUsage() != null && batchResponse.tokenUsage().inputTokenCount() != null) {
                 totalInputTokens += batchResponse.tokenUsage().inputTokenCount();
@@ -444,6 +444,40 @@ public final class WorkspaceEmbeddingIndex {
 
         TokenUsage tokenUsage = hasTokenUsage ? new TokenUsage(totalInputTokens, 0) : null;
         return Response.from(allEmbeddings, tokenUsage);
+    }
+
+    private Response<List<Embedding>> embedSegmentsWithResilience(List<TextSegment> batch) {
+        if (batch.isEmpty()) {
+            return Response.from(List.of());
+        }
+        try {
+            return embeddingModel.embedAll(batch);
+        } catch (RuntimeException e) {
+            if (batch.size() == 1) {
+                throw e;
+            }
+            int mid = batch.size() / 2;
+            List<TextSegment> left = batch.subList(0, mid);
+            List<TextSegment> right = batch.subList(mid, batch.size());
+
+            Response<List<Embedding>> leftResp = embedSegmentsWithResilience(left);
+            Response<List<Embedding>> rightResp = embedSegmentsWithResilience(right);
+
+            List<Embedding> combined = new ArrayList<>(leftResp.content());
+            combined.addAll(rightResp.content());
+
+            int tokens = 0;
+            boolean hasTokens = false;
+            if (leftResp.tokenUsage() != null && leftResp.tokenUsage().inputTokenCount() != null) {
+                tokens += leftResp.tokenUsage().inputTokenCount();
+                hasTokens = true;
+            }
+            if (rightResp.tokenUsage() != null && rightResp.tokenUsage().inputTokenCount() != null) {
+                tokens += rightResp.tokenUsage().inputTokenCount();
+                hasTokens = true;
+            }
+            return Response.from(combined, hasTokens ? new TokenUsage(tokens, 0) : null);
+        }
     }
 
     private static String sha256(String content) {

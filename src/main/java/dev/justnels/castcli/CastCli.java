@@ -43,6 +43,8 @@ import dev.justnels.castcli.tools.AutoApprovalGate;
 import dev.justnels.castcli.tools.ConsoleApprovalGate;
 import dev.justnels.castcli.tools.DefaultToolSelector;
 import dev.justnels.castcli.tools.FastPathExecutor;
+import dev.justnels.castcli.connect.ClientConnector;
+import dev.justnels.castcli.connect.ConnectService;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
@@ -62,7 +64,7 @@ import java.util.concurrent.Callable;
         subcommands = {CastCli.Ask.class, CastCli.Models.class, CastCli.Commission.class, CastCli.McpServe.class,
                 CastCli.Index.class, CastCli.RouteEval.class, CastCli.Memory.class, CastCli.SessionCmd.class, CastCli.Telemetry.class,
                 CastCli.McpUsage.class, CastCli.Doctor.class, CastCli.HealthServer.class, CastCli.Gateway.class,
-                CastCli.Completion.class, CastCli.ConfigCmd.class, CastCli.Init.class})
+                CastCli.Completion.class, CastCli.ConfigCmd.class, CastCli.Init.class, CastCli.ConnectCmd.class})
 public final class CastCli implements Runnable {
     @Option(names = "--config", description = "Path to CastCLI JSON configuration.",
             defaultValue = ".cast/harness.local.json")
@@ -1095,6 +1097,77 @@ public final class CastCli implements Runnable {
                             }
                     }
                     """;
+        }
+    }
+
+    @Command(name = "connect", description = "Generate and apply configuration for client tools (claude, codex, cursor, continue, aider).",
+            mixinStandardHelpOptions = true)
+    static final class ConnectCmd implements Callable<Integer> {
+        @CommandLine.ParentCommand private CastCli parent;
+
+        @Parameters(index = "0", arity = "0..1",
+                description = "Target client identifier: claude, codex, cursor, continue, aider.")
+        private String client;
+
+        @Option(names = "--list", description = "List all supported client integrations.")
+        private boolean list;
+
+        @Option(names = "--check", description = "Verify gateway connectivity without modifying configuration.")
+        private boolean check;
+
+        @Option(names = "--dry-run", description = "Show proposed configuration diff without modifying files.")
+        private boolean dryRun;
+
+        @Option(names = "--disconnect", description = "Remove CastCLI settings from target client configuration.")
+        private boolean disconnect;
+
+        @Option(names = "--force", description = "Overwrite configuration even if already connected.")
+        private boolean force;
+
+        @Option(names = "--port", defaultValue = "8081", description = "CastCLI gateway port.")
+        private int gatewayPort;
+
+        @Option(names = "--token", description = "Bearer token for authenticating to CastCLI gateway.")
+        private String bearerToken;
+
+        @Override
+        public Integer call() throws Exception {
+            ConnectService service = new ConnectService();
+
+            if (list || (client == null && !check)) {
+                System.out.println("Supported client integrations for 'cast connect <client>':");
+                for (ClientConnector connector : service.listConnectors()) {
+                    Path configPath = connector.resolveConfigPath(Path.of("").toAbsolutePath());
+                    boolean connected = connector.isConnected(configPath);
+                    System.out.printf("  %-10s %-70s [%s]%n",
+                            connector.id(), connector.description(), connected ? "connected: " + configPath.getFileName() : "not connected");
+                }
+                return 0;
+            }
+
+            if (check) {
+                boolean ok = service.checkConnectivity(gatewayPort, bearerToken);
+                System.out.printf("CastCLI gateway connectivity check on http://127.0.0.1:%d/v1: %s%n",
+                        gatewayPort, ok ? "SUCCESS (gateway reachable)" : "FAILED (gateway unreachable; start with 'cast gateway')");
+                return ok ? 0 : 1;
+            }
+
+            Path workspace = Path.of("").toAbsolutePath();
+            if (disconnect) {
+                ClientConnector.DisconnectResult result = service.disconnectClient(client, workspace, dryRun);
+                System.out.println(result.message());
+                if (!result.diff().isEmpty()) {
+                    System.out.println(result.diff());
+                }
+                return result.success() ? 0 : 1;
+            }
+
+            ClientConnector.ConnectResult result = service.connectClient(client, workspace, gatewayPort, bearerToken, dryRun, force);
+            System.out.println(result.message());
+            if (!result.diff().isEmpty()) {
+                System.out.println(result.diff());
+            }
+            return result.success() ? 0 : 1;
         }
     }
 }
