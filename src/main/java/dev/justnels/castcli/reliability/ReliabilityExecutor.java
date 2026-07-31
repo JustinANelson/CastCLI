@@ -83,7 +83,7 @@ public final class ReliabilityExecutor {
             boolean acquiredGlobal = false;
             boolean acquiredTier = false;
             Semaphore tierSemaphore = (provider.tier() == ModelTier.SMALL_LOCAL || provider.tier() == ModelTier.LARGE_LOCAL)
-                    ? tierSemaphores.computeIfAbsent(provider.tier(), t -> new Semaphore(Math.max(1, config.maxConcurrentRequests() / 2), true))
+                    ? tierSemaphores.computeIfAbsent(provider.tier(), t -> new Semaphore(Math.min(2, Math.max(1, config.maxConcurrentRequests() / 2)), true))
                     : null;
             var attemptSpan = CastTelemetry.current().span("castcli.provider.attempt")
                     .attribute("castcli.provider.id", provider.id())

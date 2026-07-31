@@ -376,5 +376,19 @@ public final class SqliteMemoryStore implements MemoryStore {
         }
     }
 
+    public void triggerAutoVacuumIfStale(dev.justnels.castcli.orchestration.HarnessOrchestrator orchestrator) {
+        try {
+            List<MemoryEntry> sessionEntries = list("session", 50);
+            if (sessionEntries.size() > 15) {
+                Thread.ofVirtual().start(() -> {
+                    LocalMemoryCleaner cleaner = new LocalMemoryCleaner(this, orchestrator, "session");
+                    cleaner.cleanAndConsolidate();
+                });
+            }
+        } catch (Exception ignored) {
+            // Best effort background auto-vacuum
+        }
+    }
+
     private record Scored(MemoryEntry entry, double score) { }
 }

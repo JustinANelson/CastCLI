@@ -26,6 +26,15 @@ public final class FastPathExecutor {
             return Optional.of(new FastPathResult("Current UTC time is " + timeStr, "currentTime"));
         }
 
+        if (isPureDateQuery(lower)) {
+            String dateStr = java.time.LocalDate.now(java.time.ZoneOffset.UTC).toString();
+            return Optional.of(new FastPathResult("Current UTC date is " + dateStr, "currentDate"));
+        }
+
+        if (isVersionQuery(lower)) {
+            return Optional.of(new FastPathResult("CastCLI version " + dev.justnels.castcli.doctor.BuildInfo.version(), "versionInfo"));
+        }
+
         Matcher matcher = FILE_LIST_PATTERN.matcher(prompt);
         if (matcher.find()) {
             String glob = matcher.group(1);
@@ -45,11 +54,26 @@ public final class FastPathExecutor {
     }
 
     private static boolean isPureTimeQuery(String lowerPrompt) {
-        return lowerPrompt.equals("what time is it?")
-                || lowerPrompt.equals("what time is it")
-                || lowerPrompt.equals("what is the current time?")
-                || lowerPrompt.equals("what is the current time")
+        return lowerPrompt.contains("what time is it")
+                || lowerPrompt.contains("what is the current time")
+                || lowerPrompt.contains("what time is it in utc")
                 || lowerPrompt.equals("current time");
+    }
+
+    private static boolean isPureDateQuery(String lowerPrompt) {
+        return lowerPrompt.contains("what day is it")
+                || lowerPrompt.contains("what date is it")
+                || lowerPrompt.contains("what is today's date")
+                || lowerPrompt.contains("what is todays date")
+                || lowerPrompt.equals("current date")
+                || lowerPrompt.equals("today's date");
+    }
+
+    private static boolean isVersionQuery(String lowerPrompt) {
+        return lowerPrompt.equals("what version is cast-cli")
+                || lowerPrompt.equals("what version is cast-cli?")
+                || lowerPrompt.equals("cast-cli version")
+                || lowerPrompt.equals("version");
     }
 }
 

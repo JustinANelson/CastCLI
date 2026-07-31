@@ -186,8 +186,15 @@ public final class WorkspaceEmbeddingIndex {
                 totalChunks, inputTokensUsed, config.estimatedCostUsd(inputTokensUsed), duration);
     }
 
+    public static final double DEFAULT_MIN_SCORE = 0.0;
+
     /** Semantically searches the persisted index; throws if {@link #rebuild()} has never been run. */
     public List<SearchHit> search(String query, int maxResults) {
+        return search(query, maxResults, DEFAULT_MIN_SCORE);
+    }
+
+    /** Semantically searches the persisted index with an explicit minimum similarity score threshold. */
+    public List<SearchHit> search(String query, int maxResults, double minScore) {
         if (!Files.isRegularFile(indexFile)) {
             throw new IllegalStateException(
                     "No semantic index found at " + indexFile + ". Run 'llm-harness index' first.");
@@ -198,7 +205,7 @@ public final class WorkspaceEmbeddingIndex {
         EmbeddingSearchRequest request = EmbeddingSearchRequest.builder()
                 .queryEmbedding(queryEmbedding)
                 .maxResults(maxResults)
-                .minScore(0.0)
+                .minScore(minScore)
                 .build();
         EmbeddingSearchResult<TextSegment> result = store.search(request);
         return result.matches().stream()

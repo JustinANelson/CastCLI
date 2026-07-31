@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import dev.justnels.castcli.cache.DeterministicResultCache;
 import dev.justnels.castcli.config.HarnessConfig;
 import dev.justnels.castcli.config.ModelTier;
 import dev.justnels.castcli.config.ProviderConfig;
@@ -35,6 +36,7 @@ import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -60,6 +62,7 @@ public final class McpStdioServer {
     private final McpUsageStore usageStore;
     private final boolean auditEnabled;
     private final boolean includeResponseMetadata;
+    private final DeterministicResultCache resultCache = new DeterministicResultCache();
     private boolean initializeResponded;
     private boolean initialized;
 
@@ -226,9 +229,27 @@ public final class McpStdioServer {
             return result;
         }
         JsonNode arguments = params.path("arguments");
+        String argString = arguments == null ? "" : arguments.toString();
+        boolean isReadOnly = isCacheableTool(name);
+        if (isReadOnly) {
+            Optional<String> cached = resultCache.get(name, argString);
+            if (cached.isPresent()) {
+                String text = cached.get();
+                content.addObject().put("type", "text").put("text", text);
+                if (includeResponseMetadata) {
+                    ObjectNode metadata = result.putObject("_meta");
+                    metadata.put("castcli/invocationId", invocationId);
+                    metadata.put("castcli/cached", true);
+                }
+                return result;
+            }
+        }
         try {
             McpTool.ExecutionResult execution = tool.handler().handle(arguments);
             String text = execution.text();
+            if (isReadOnly && text != null && !text.isBlank()) {
+                resultCache.put(name, argString, text);
+            }
             McpTool.Delegation delegation = execution.delegation();
             if (delegation != null && includeResponseMetadata) {
                 text += delegationReceipt(invocationId, delegation);
@@ -526,5 +547,14 @@ public final class McpStdioServer {
             super(message);
             this.code = code;
         }
+    }
+
+    private static boolean isCacheableTool(String toolName) {
+        return switch (toolName) {
+            case "summarize_files", "analyze_failure", "review_diff",
+                    "map_change_impact", "generate_tests", "search_workspace",
+                    "read_workspace_file", "list_workspace_files" -> true;
+            default -> false;
+        };
     }
 }
