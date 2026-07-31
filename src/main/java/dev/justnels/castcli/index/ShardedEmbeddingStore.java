@@ -36,6 +36,7 @@ public final class ShardedEmbeddingStore {
     private final int shardCount;
     private final Map<Integer, InMemoryEmbeddingStore<TextSegment>> shards = new HashMap<>();
     private final Set<Integer> dirtyShards = new HashSet<>();
+    private volatile int knownVectorDimension = -1;
 
     public ShardedEmbeddingStore(Path primaryIndexFile) {
         this(primaryIndexFile, DEFAULT_SHARD_COUNT);
@@ -48,6 +49,33 @@ public final class ShardedEmbeddingStore {
         for (int i = 0; i < this.shardCount; i++) {
             shards.put(i, new InMemoryEmbeddingStore<>());
         }
+    }
+
+    private static final int[] CANDIDATE_DIMENSIONS = new int[]{1024, 1536, 16, 8, 2, 4, 768, 384, 512, 4096, 2048, 128, 256, 32, 64, 3072};
+
+    public int vectorDimension() {
+        if (knownVectorDimension > 0) {
+            return knownVectorDimension;
+        }
+        for (InMemoryEmbeddingStore<TextSegment> shard : shards.values()) {
+            if (!shard.isEmpty()) {
+                for (int dim : CANDIDATE_DIMENSIONS) {
+                    try {
+                        List<EmbeddingMatch<TextSegment>> matches = shard.search(EmbeddingSearchRequest.builder()
+                                .queryEmbedding(Embedding.from(new float[dim]))
+                                .maxResults(1)
+                                .minScore(0.0)
+                                .build()).matches();
+                        if (!matches.isEmpty() && matches.get(0).embedding() != null && matches.get(0).embedding().vector() != null) {
+                            knownVectorDimension = matches.get(0).embedding().vector().length;
+                            return knownVectorDimension;
+                        }
+                    } catch (IllegalArgumentException ignored) {
+                    }
+                }
+            }
+        }
+        return knownVectorDimension > 0 ? knownVectorDimension : 1024;
     }
 
     public static Path computeShardsDir(Path primaryIndexFile) {
@@ -94,21 +122,33 @@ public final class ShardedEmbeddingStore {
         } else if (Files.isRegularFile(primaryIndexFile)) {
             // Backward-compatible migration from legacy monolithic index
             InMemoryEmbeddingStore<TextSegment> legacyStore = InMemoryEmbeddingStore.fromFile(primaryIndexFile);
-            List<EmbeddingMatch<TextSegment>> matches = legacyStore.search(EmbeddingSearchRequest.builder()
-                    .queryEmbedding(Embedding.from(new float[1]))
-                    .maxResults(Integer.MAX_VALUE)
-                    .minScore(Double.NEGATIVE_INFINITY)
-                    .build()).matches();
+            if (!legacyStore.isEmpty()) {
+                List<EmbeddingMatch<TextSegment>> matches = List.of();
+                int[] candidateDimensions = new int[]{1024, 1536, 768, 384, 512, 4096, 2048, 128, 256, 3072};
+                for (int dim : candidateDimensions) {
+                    try {
+                        matches = legacyStore.search(EmbeddingSearchRequest.builder()
+                                .queryEmbedding(Embedding.from(new float[dim]))
+                                .maxResults(Integer.MAX_VALUE)
+                                .minScore(0.0)
+                                .build()).matches();
+                        break;
+                    } catch (IllegalArgumentException ignored) {
+                        // Dimension mismatch; try next candidate dimension
+                    }
+                }
 
-            for (EmbeddingMatch<TextSegment> match : matches) {
-                TextSegment segment = match.embedded();
-                Embedding embedding = match.embedding();
-                String source = segment.metadata().getString(SOURCE_KEY);
-                int shardIndex = store.shardIndexFor(source);
-                store.shards.get(shardIndex).add(embedding, segment);
-                store.dirtyShards.add(shardIndex);
+                for (EmbeddingMatch<TextSegment> match : matches) {
+                    TextSegment segment = match.embedded();
+                    Embedding embedding = match.embedding();
+                    String source = segment.metadata().getString(SOURCE_KEY);
+                    int shardIndex = store.shardIndexFor(source);
+                    store.shards.get(shardIndex).add(embedding, segment);
+                    store.dirtyShards.add(shardIndex);
+                }
             }
         }
+        store.vectorDimension();
         return store;
     }
 
@@ -139,6 +179,9 @@ public final class ShardedEmbeddingStore {
         for (int i = 0; i < segments.size(); i++) {
             TextSegment segment = segments.get(i);
             Embedding embedding = embeddings.get(i);
+            if (embedding != null && embedding.vector() != null && embedding.vector().length > 0) {
+                this.knownVectorDimension = embedding.vector().length;
+            }
             String source = segment.metadata().getString(SOURCE_KEY);
             int shardIndex = shardIndexFor(source);
 

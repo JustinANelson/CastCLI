@@ -36,6 +36,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Builds and queries a persisted semantic (embedding-based) index of workspace source files, so agents can
@@ -105,6 +106,9 @@ public final class WorkspaceEmbeddingIndex {
         /** Called once, right after the file scan completes and before any embedding begins. */
         default void onScanComplete(int totalFiles) { }
 
+        /** Called when a file begins processing / embedding. */
+        default void onFileStarted(int started, int total, String relativePath) { }
+
         /** Called after each file finishes processing (embedded, unchanged, or failed). */
         default void onFileProcessed(int completed, int total, String relativePath, boolean failed) { }
     }
@@ -159,6 +163,9 @@ public final class WorkspaceEmbeddingIndex {
         List<String> failedFiles = new ArrayList<>();
 
         Semaphore semaphore = new Semaphore(config.maxConcurrency());
+        AtomicInteger startedCount = new AtomicInteger(0);
+        AtomicInteger completedCount = new AtomicInteger(0);
+        int totalFiles = files.size();
 
         try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
             List<Future<FileProcessingTask>> futures = new ArrayList<>();
@@ -167,49 +174,63 @@ public final class WorkspaceEmbeddingIndex {
                 futures.add(executor.submit(() -> {
                     String relativePath = toRelativePath(file);
                     currentSources.add(relativePath);
+                    int st = startedCount.incrementAndGet();
+                    listener.onFileStarted(st, totalFiles, relativePath);
 
                     String hash;
                     try {
                         hash = FastFileHasher.hashFile(file);
                     } catch (IOException | RuntimeException notText) {
+                        int c = completedCount.incrementAndGet();
+                        listener.onFileProcessed(c, totalFiles, relativePath, false);
                         return null; // skip unreadable/binary files
                     }
 
                     List<TextSegment> existing = existingBySource.getOrDefault(relativePath, List.of());
                     if (!existing.isEmpty() && hash.equals(existing.get(0).metadata().getString(HASH_KEY))) {
-                        return new FileProcessingTask(relativePath, true, false, null, List.of(), null, existing.size());
+                        FileProcessingTask task = new FileProcessingTask(relativePath, true, false, null, List.of(), null, existing.size());
+                        int c = completedCount.incrementAndGet();
+                        listener.onFileProcessed(c, totalFiles, relativePath, false);
+                        return task;
                     }
 
                     List<String> lines;
                     try {
                         lines = Files.readAllLines(file, StandardCharsets.UTF_8);
                     } catch (IOException | RuntimeException notText) {
+                        int c = completedCount.incrementAndGet();
+                        listener.onFileProcessed(c, totalFiles, relativePath, false);
                         return null; // skip unreadable/binary files
                     }
 
                     List<TextSegment> segments = chunkFile(relativePath, lines, hash);
                     if (segments.isEmpty()) {
-                        return new FileProcessingTask(relativePath, false, false, null, List.of(), null, 0);
+                        FileProcessingTask task = new FileProcessingTask(relativePath, false, false, null, List.of(), null, 0);
+                        int c = completedCount.incrementAndGet();
+                        listener.onFileProcessed(c, totalFiles, relativePath, false);
+                        return task;
                     }
 
                     semaphore.acquire();
                     try {
                         Response<List<Embedding>> response = embedSegmentsInBatches(segments);
-                        return new FileProcessingTask(relativePath, false, false, null, segments, response, 0);
+                        FileProcessingTask task = new FileProcessingTask(relativePath, false, false, null, segments, response, 0);
+                        int c = completedCount.incrementAndGet();
+                        listener.onFileProcessed(c, totalFiles, relativePath, false);
+                        return task;
                     } catch (RuntimeException embeddingFailure) {
-                        // A single file's embedding failure (e.g. an HTTP timeout against a slow/cold
-                        // local backend) must not abort the whole run and lose every other file's work --
-                        // skip it and let the caller retry on the next rebuild().
-                        return new FileProcessingTask(relativePath, false, true,
+                        FileProcessingTask task = new FileProcessingTask(relativePath, false, true,
                                 embeddingFailure.getClass().getSimpleName() + ": " + embeddingFailure.getMessage(),
                                 List.of(), null, 0);
+                        int c = completedCount.incrementAndGet();
+                        listener.onFileProcessed(c, totalFiles, relativePath, true);
+                        return task;
                     } finally {
                         semaphore.release();
                     }
                 }));
             }
 
-            int completed = 0;
             for (Future<FileProcessingTask> future : futures) {
                 FileProcessingTask taskResult;
                 try {
@@ -218,27 +239,19 @@ public final class WorkspaceEmbeddingIndex {
                     Thread.currentThread().interrupt();
                     throw new IOException("Indexing interrupted", e);
                 } catch (ExecutionException e) {
-                    // Should be unreachable now that embedding failures are caught above, but treat any
-                    // other unexpected per-file failure the same way rather than aborting the whole run.
-                    completed++;
                     failedFiles.add("(unknown file): " + e.getCause());
-                    listener.onFileProcessed(completed, files.size(), "(unknown file)", true);
                     continue;
                 }
 
                 if (taskResult == null) {
-                    completed++;
                     continue;
                 }
-                completed++;
 
                 if (taskResult.failed()) {
                     failedFiles.add(taskResult.relativePath() + ": " + taskResult.failureMessage());
-                    listener.onFileProcessed(completed, files.size(), taskResult.relativePath(), true);
                 } else if (taskResult.unchanged()) {
                     filesUnchanged++;
                     totalChunks += taskResult.existingChunkCount();
-                    listener.onFileProcessed(completed, files.size(), taskResult.relativePath(), false);
                 } else if (!taskResult.segments().isEmpty()) {
                     store.removeAll(sourceFilter(taskResult.relativePath()));
                     store.addAll(taskResult.embeddingResponse().content(), taskResult.segments());
@@ -247,9 +260,6 @@ public final class WorkspaceEmbeddingIndex {
                     if (taskResult.embeddingResponse().tokenUsage() != null) {
                         inputTokensUsed += taskResult.embeddingResponse().tokenUsage().inputTokenCount();
                     }
-                    listener.onFileProcessed(completed, files.size(), taskResult.relativePath(), false);
-                } else {
-                    listener.onFileProcessed(completed, files.size(), taskResult.relativePath(), false);
                 }
             }
         }
@@ -501,10 +511,11 @@ public final class WorkspaceEmbeddingIndex {
         return segments;
     }
 
-    private Embedding zeroEmbedding() {
+    private Embedding zeroEmbedding(ShardedEmbeddingStore store) {
+        int dim = store != null ? store.vectorDimension() : 1024;
         Embedding cached = cachedZeroEmbedding;
-        if (cached == null) {
-            cached = Embedding.from(new float[embeddingModel.dimension()]);
+        if (cached == null || cached.vector().length != dim) {
+            cached = Embedding.from(new float[dim]);
             cachedZeroEmbedding = cached;
         }
         return cached;
@@ -528,11 +539,11 @@ public final class WorkspaceEmbeddingIndex {
     }
 
     private List<TextSegment> scanWithFilter(ShardedEmbeddingStore store, Filter filter) {
-        if (store.isEmpty()) {
+        if (store == null || store.isEmpty()) {
             return List.of();
         }
         EmbeddingSearchRequest.EmbeddingSearchRequestBuilder builder = EmbeddingSearchRequest.builder()
-                .queryEmbedding(zeroEmbedding())
+                .queryEmbedding(zeroEmbedding(store))
                 .maxResults(Integer.MAX_VALUE)
                 .minScore(0.0);
         if (filter != null) {

@@ -908,17 +908,18 @@ public final class CastCli implements Runnable {
          * a visual progress bar, percentage, and current file name as files are processed. */
         private static final class IndexProgressPrinter implements WorkspaceEmbeddingIndex.ProgressListener {
             private static final int LARGE_REPO_FILE_WARNING_THRESHOLD = 300;
-            private static final long PROGRESS_PRINT_INTERVAL_NANOS = 200_000_000L;
+            private static final long PROGRESS_PRINT_INTERVAL_NANOS = 100_000_000L;
 
-            private long lastPrintNanos = Long.MIN_VALUE;
+            private volatile long lastPrintNanos = Long.MIN_VALUE;
 
             @Override
-            public void onScanStarted() {
+            public synchronized void onScanStarted() {
                 System.err.println("Scanning workspace for source files...");
+                System.err.flush();
             }
 
             @Override
-            public void onScanComplete(int totalFiles) {
+            public synchronized void onScanComplete(int totalFiles) {
                 System.err.printf("Found %d file(s) to check for changes.%n", totalFiles);
                 if (totalFiles >= LARGE_REPO_FILE_WARNING_THRESHOLD) {
                     System.err.printf(
@@ -927,30 +928,45 @@ public final class CastCli implements Runnable {
                                     + "timeout errors, increase embeddings.timeoutSeconds or lower "
                                     + "embeddings.maxConcurrency in your config.%n");
                 }
+                System.err.flush();
             }
 
             @Override
-            public void onFileProcessed(int completed, int total, String relativePath, boolean failed) {
+            public synchronized void onFileStarted(int started, int total, String relativePath) {
+                long now = System.nanoTime();
+                if (now - lastPrintNanos >= PROGRESS_PRINT_INTERVAL_NANOS) {
+                    lastPrintNanos = now;
+                    renderProgressBar(Math.max(0, started - 1), total, relativePath);
+                }
+            }
+
+            @Override
+            public synchronized void onFileProcessed(int completed, int total, String relativePath, boolean failed) {
                 if (failed) {
                     System.err.printf("%n[%d/%d] FAILED to embed %s (will retry next run)%n", completed, total, relativePath);
+                    System.err.flush();
                     return;
                 }
                 long now = System.nanoTime();
                 if (completed == total || now - lastPrintNanos >= PROGRESS_PRINT_INTERVAL_NANOS) {
                     lastPrintNanos = now;
-                    int percent = total > 0 ? (completed * 100) / total : 100;
-                    int barWidth = 20;
-                    int filled = total > 0 ? (completed * barWidth) / total : barWidth;
-                    String bar = "=".repeat(Math.max(0, filled)) + (filled < barWidth ? ">" : "") + " ".repeat(Math.max(0, barWidth - filled - (filled < barWidth ? 1 : 0)));
-                    String fileSnippet = relativePath.length() > 40 ? "..." + relativePath.substring(relativePath.length() - 37) : relativePath;
-
-                    System.err.printf("\rIndexing workspace: [%-20s] %3d%% (%d/%d) | %-40s",
-                            bar, percent, completed, total, fileSnippet);
-
-                    if (completed == total) {
-                        System.err.println();
-                    }
+                    renderProgressBar(completed, total, relativePath);
                 }
+            }
+
+            private void renderProgressBar(int currentCount, int total, String relativePath) {
+                int percent = total > 0 ? (currentCount * 100) / total : 100;
+                int barWidth = 20;
+                int filled = total > 0 ? (currentCount * barWidth) / total : barWidth;
+                String bar = "=".repeat(Math.max(0, filled)) + (filled < barWidth ? ">" : "") + " ".repeat(Math.max(0, barWidth - filled - (filled < barWidth ? 1 : 0)));
+                String fileSnippet = relativePath.length() > 40 ? "..." + relativePath.substring(relativePath.length() - 37) : relativePath;
+
+                System.err.printf("\rIndexing workspace: [%-20s] %3d%% (%d/%d) | %-40s",
+                        bar, percent, currentCount, total, fileSnippet);
+                if (currentCount == total) {
+                    System.err.println();
+                }
+                System.err.flush();
             }
         }
     }
