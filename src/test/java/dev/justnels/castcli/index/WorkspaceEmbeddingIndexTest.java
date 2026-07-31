@@ -184,6 +184,93 @@ class WorkspaceEmbeddingIndexTest {
         }
     }
 
+    @Test
+    void oneFileFailingToEmbedDoesNotAbortTheWholeRebuildOrLoseOtherFiles() throws IOException {
+        Files.writeString(workspace.resolve("Good.java"), "class Good { void ok() {} }\n");
+        Files.writeString(workspace.resolve("Bad.java"), "FAIL_MARKER class Bad { void broken() {} }\n");
+
+        FlakyEmbeddingModel flakyModel = new FlakyEmbeddingModel();
+        WorkspaceEmbeddingIndex index = new WorkspaceEmbeddingIndex(config, workspace, flakyModel);
+
+        WorkspaceEmbeddingIndex.IndexReport report = index.rebuild();
+
+        assertThat(report.filesScanned()).isEqualTo(2);
+        assertThat(report.filesEmbedded()).isEqualTo(1);
+        assertThat(report.filesFailed()).isEqualTo(1);
+        assertThat(report.failedFiles()).hasSize(1);
+        assertThat(report.failedFiles().get(0)).contains("Bad.java");
+
+        List<WorkspaceEmbeddingIndex.SearchHit> hits = index.search("Good ok", 10);
+        assertThat(hits).extracting(WorkspaceEmbeddingIndex.SearchHit::sourcePath).contains("Good.java");
+    }
+
+    @Test
+    void aFailedFileIsRetriedOnTheNextRebuild() throws IOException {
+        Files.writeString(workspace.resolve("Bad.java"), "FAIL_MARKER class Bad {}\n");
+
+        FlakyEmbeddingModel flakyModel = new FlakyEmbeddingModel();
+        WorkspaceEmbeddingIndex index = new WorkspaceEmbeddingIndex(config, workspace, flakyModel);
+
+        WorkspaceEmbeddingIndex.IndexReport firstReport = index.rebuild();
+        assertThat(firstReport.filesFailed()).isEqualTo(1);
+
+        flakyModel.stopFailing();
+        WorkspaceEmbeddingIndex.IndexReport secondReport = index.rebuild();
+
+        assertThat(secondReport.filesFailed()).isZero();
+        assertThat(secondReport.filesEmbedded()).isEqualTo(1);
+    }
+
+    @Test
+    void rebuildReportsProgressAsFilesComplete() throws IOException {
+        Files.writeString(workspace.resolve("A.java"), "class A { void a() {} }\n");
+        Files.writeString(workspace.resolve("B.java"), "class B { void b() {} }\n");
+
+        WorkspaceEmbeddingIndex index = newIndex();
+        java.util.List<Integer> scanTotals = new java.util.concurrent.CopyOnWriteArrayList<>();
+        java.util.List<String> processed = new java.util.concurrent.CopyOnWriteArrayList<>();
+        index.rebuild(new WorkspaceEmbeddingIndex.ProgressListener() {
+            @Override
+            public void onScanComplete(int totalFiles) {
+                scanTotals.add(totalFiles);
+            }
+
+            @Override
+            public void onFileProcessed(int completed, int total, String relativePath, boolean failed) {
+                processed.add(relativePath);
+            }
+        });
+
+        assertThat(scanTotals).containsExactly(2);
+        assertThat(processed).containsExactlyInAnyOrder("A.java", "B.java");
+    }
+
+    /** Throws for any chunk whose text contains {@code FAIL_MARKER}, simulating a backend timeout for a
+     * single file, until {@link #stopFailing()} is called. */
+    private static final class FlakyEmbeddingModel implements EmbeddingModel {
+        private volatile boolean failing = true;
+
+        void stopFailing() {
+            failing = false;
+        }
+
+        @Override
+        public int dimension() {
+            return 8;
+        }
+
+        @Override
+        public Response<List<Embedding>> embedAll(List<TextSegment> textSegments) {
+            if (failing && textSegments.stream().anyMatch(s -> s.text().contains("FAIL_MARKER"))) {
+                throw new dev.langchain4j.exception.TimeoutException("simulated timeout");
+            }
+            List<Embedding> embeddings = textSegments.stream()
+                    .map(s -> Embedding.from(new float[]{1f, 0f, 0f, 0f, 0f, 0f, 0f, 0f}))
+                    .toList();
+            return Response.from(embeddings, new TokenUsage(textSegments.size() * 10, 0));
+        }
+    }
+
     /** Deterministic bag-of-words embedding model: hashes each word into one of a fixed number of
      * buckets, so texts sharing vocabulary end up with similar vectors, without any network calls. */
     private static final class FakeEmbeddingModel implements EmbeddingModel {

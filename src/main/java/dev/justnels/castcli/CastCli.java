@@ -881,15 +881,63 @@ public final class CastCli implements Runnable {
                 return 0;
             }
 
-            WorkspaceEmbeddingIndex.IndexReport report = index.rebuild();
+            WorkspaceEmbeddingIndex.IndexReport report = index.rebuild(new IndexProgressPrinter());
             System.out.printf(
-                    "Indexed %d files (%d embedded, %d unchanged, %d removed) into %d chunks in %d ms%n",
+                    "Indexed %d files (%d embedded, %d unchanged, %d removed, %d failed) into %d chunks in %d ms%n",
                     report.filesScanned(), report.filesEmbedded(), report.filesUnchanged(),
-                    report.filesRemoved(), report.totalChunks(), report.durationMs());
+                    report.filesRemoved(), report.filesFailed(), report.totalChunks(), report.durationMs());
             System.out.printf("Embedding tokens used: %d (est. $%.5f)%n",
                     report.inputTokensUsed(), report.estimatedCostUsd());
             System.out.println("Index file: " + index.indexFile());
-            return 0;
+            if (!report.failedFiles().isEmpty()) {
+                System.err.println();
+                System.err.printf("%d file(s) failed to embed and were skipped this run:%n", report.filesFailed());
+                for (String failure : report.failedFiles()) {
+                    System.err.println("  - " + failure);
+                }
+                System.err.println("They will be retried automatically next time 'cast-cli index' runs. "
+                        + "If this keeps happening, try increasing embeddings.timeoutSeconds "
+                        + "(currently " + config.embeddings().timeoutSeconds() + "s) or lowering "
+                        + "embeddings.maxConcurrency/maxBatchSize in your config.");
+            }
+            return report.filesFailed() > 0 ? 1 : 0;
+        }
+
+        /** Prints indexing progress to stderr so a long-running index build on a large codebase (or a
+         * slow/cold local embedding backend) doesn't look like it has hung. Regular progress lines are
+         * throttled to roughly once a second; failures are reported immediately as they happen. */
+        private static final class IndexProgressPrinter implements WorkspaceEmbeddingIndex.ProgressListener {
+            /** Above this file count, a cold full index is likely to take a while; warn up front so a
+             * subsequent timeout doesn't come as a surprise. */
+            private static final int LARGE_REPO_FILE_WARNING_THRESHOLD = 300;
+            private static final long PROGRESS_PRINT_INTERVAL_NANOS = 1_000_000_000L;
+
+            private long lastPrintNanos = Long.MIN_VALUE;
+
+            @Override
+            public void onScanComplete(int totalFiles) {
+                System.err.printf("Found %d file(s) to check for changes.%n", totalFiles);
+                if (totalFiles >= LARGE_REPO_FILE_WARNING_THRESHOLD) {
+                    System.err.printf(
+                            "This is a large codebase -- a cold full index may take a while and can hit "
+                                    + "HTTP timeouts against a slow or cold local embedding backend. If you see "
+                                    + "timeout errors, increase embeddings.timeoutSeconds or lower "
+                                    + "embeddings.maxConcurrency in your config.%n");
+                }
+            }
+
+            @Override
+            public void onFileProcessed(int completed, int total, String relativePath, boolean failed) {
+                if (failed) {
+                    System.err.printf("[%d/%d] FAILED to embed %s (will retry next run)%n", completed, total, relativePath);
+                    return;
+                }
+                long now = System.nanoTime();
+                if (completed == total || now - lastPrintNanos >= PROGRESS_PRINT_INTERVAL_NANOS) {
+                    lastPrintNanos = now;
+                    System.err.printf("[%d/%d] indexed%n", completed, total);
+                }
+            }
         }
     }
 

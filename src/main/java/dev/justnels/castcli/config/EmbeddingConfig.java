@@ -48,7 +48,9 @@ public record EmbeddingConfig(
     private static final int DEFAULT_CHUNK_LINES = 60;
     private static final int DEFAULT_CHUNK_OVERLAP_LINES = 10;
     private static final long DEFAULT_MAX_FILE_BYTES = 300_000;
-    private static final int DEFAULT_TIMEOUT_SECONDS = 60;
+    // 60s was too tight for a large batch against a cold or otherwise-loaded local model; 120s gives a
+    // slow/cold local backend room to finish a full-size batch before langchain4j's own retry kicks in.
+    private static final int DEFAULT_TIMEOUT_SECONDS = 120;
 
     public EmbeddingConfig(
             boolean enabled,

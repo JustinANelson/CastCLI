@@ -82,11 +82,26 @@ public final class WorkspaceEmbeddingIndex {
     }
 
     public record IndexReport(
-            int filesScanned, int filesEmbedded, int filesUnchanged, int filesRemoved,
+            int filesScanned, int filesEmbedded, int filesUnchanged, int filesRemoved, int filesFailed,
+            List<String> failedFiles,
             int totalChunks, long inputTokensUsed, double estimatedCostUsd, long durationMs) {
     }
 
     public record SearchHit(String sourcePath, int startLine, int endLine, double score, String text) {
+    }
+
+    /** Reports progress during {@link #rebuild(ProgressListener)} so long-running indexing runs (large
+     * repositories, slow/cold embedding backends) can show the caller something is happening instead of
+     * appearing to hang. All methods are called from whichever thread completes the corresponding work,
+     * so implementations must be thread-safe. */
+    public interface ProgressListener {
+        ProgressListener NO_OP = new ProgressListener() { };
+
+        /** Called once, right after the file scan completes and before any embedding begins. */
+        default void onScanComplete(int totalFiles) { }
+
+        /** Called after each file finishes processing (embedded, unchanged, or failed). */
+        default void onFileProcessed(int completed, int total, String relativePath, boolean failed) { }
     }
 
     public Path indexFile() {
@@ -96,12 +111,21 @@ public final class WorkspaceEmbeddingIndex {
     private record CachedStore(InMemoryEmbeddingStore<TextSegment> store, long mtimeMillis) { }
 
     private record FileProcessingTask(
-            String relativePath, boolean unchanged, List<TextSegment> segments,
-            Response<List<Embedding>> embeddingResponse, int existingChunkCount) { }
+            String relativePath, boolean unchanged, boolean failed, String failureMessage,
+            List<TextSegment> segments, Response<List<Embedding>> embeddingResponse, int existingChunkCount) { }
 
     /** Rebuilds the index in place: embeds new/changed files, reuses embeddings for unchanged ones, and
      * prunes chunks for files no longer present on disk. Safe to call repeatedly (e.g. after every edit). */
     public IndexReport rebuild() throws IOException {
+        return rebuild(ProgressListener.NO_OP);
+    }
+
+    /** Same as {@link #rebuild()}, additionally reporting progress via {@code listener}. A single file's
+     * embedding failure (e.g. an HTTP timeout against a slow/cold local backend) does not abort the whole
+     * run: that file is skipped and counted in {@link IndexReport#filesFailed()} so every other file's work
+     * is still embedded, persisted, and not lost. Skipped files are retried automatically on the next
+     * {@code rebuild()} call, since they aren't recorded as unchanged. */
+    public IndexReport rebuild(ProgressListener listener) throws IOException {
         long startTime = System.currentTimeMillis();
         InMemoryEmbeddingStore<TextSegment> store = Files.isRegularFile(indexFile)
                 ? InMemoryEmbeddingStore.fromFile(indexFile)
@@ -120,11 +144,13 @@ public final class WorkspaceEmbeddingIndex {
 
         List<Path> files = collectIncludedFiles();
         Set<String> currentSources = ConcurrentHashMap.newKeySet();
+        listener.onScanComplete(files.size());
 
         int filesEmbedded = 0;
         int filesUnchanged = 0;
         int totalChunks = 0;
         long inputTokensUsed = 0;
+        List<String> failedFiles = new ArrayList<>();
 
         Semaphore semaphore = new Semaphore(config.maxConcurrency());
 
@@ -145,7 +171,7 @@ public final class WorkspaceEmbeddingIndex {
 
                     List<TextSegment> existing = existingBySource.getOrDefault(relativePath, List.of());
                     if (!existing.isEmpty() && hash.equals(existing.get(0).metadata().getString(HASH_KEY))) {
-                        return new FileProcessingTask(relativePath, true, List.of(), null, existing.size());
+                        return new FileProcessingTask(relativePath, true, false, null, List.of(), null, existing.size());
                     }
 
                     List<String> lines;
@@ -157,19 +183,27 @@ public final class WorkspaceEmbeddingIndex {
 
                     List<TextSegment> segments = chunkFile(relativePath, lines, hash);
                     if (segments.isEmpty()) {
-                        return new FileProcessingTask(relativePath, false, List.of(), null, 0);
+                        return new FileProcessingTask(relativePath, false, false, null, List.of(), null, 0);
                     }
 
                     semaphore.acquire();
                     try {
                         Response<List<Embedding>> response = embedSegmentsInBatches(segments);
-                        return new FileProcessingTask(relativePath, false, segments, response, 0);
+                        return new FileProcessingTask(relativePath, false, false, null, segments, response, 0);
+                    } catch (RuntimeException embeddingFailure) {
+                        // A single file's embedding failure (e.g. an HTTP timeout against a slow/cold
+                        // local backend) must not abort the whole run and lose every other file's work --
+                        // skip it and let the caller retry on the next rebuild().
+                        return new FileProcessingTask(relativePath, false, true,
+                                embeddingFailure.getClass().getSimpleName() + ": " + embeddingFailure.getMessage(),
+                                List.of(), null, 0);
                     } finally {
                         semaphore.release();
                     }
                 }));
             }
 
+            int completed = 0;
             for (Future<FileProcessingTask> future : futures) {
                 FileProcessingTask taskResult;
                 try {
@@ -178,15 +212,27 @@ public final class WorkspaceEmbeddingIndex {
                     Thread.currentThread().interrupt();
                     throw new IOException("Indexing interrupted", e);
                 } catch (ExecutionException e) {
-                    if (e.getCause() instanceof RuntimeException re) throw re;
-                    throw new IOException("Failed to process file during indexing", e.getCause());
+                    // Should be unreachable now that embedding failures are caught above, but treat any
+                    // other unexpected per-file failure the same way rather than aborting the whole run.
+                    completed++;
+                    failedFiles.add("(unknown file): " + e.getCause());
+                    listener.onFileProcessed(completed, files.size(), "(unknown file)", true);
+                    continue;
                 }
 
-                if (taskResult == null) continue;
+                if (taskResult == null) {
+                    completed++;
+                    continue;
+                }
+                completed++;
 
-                if (taskResult.unchanged()) {
+                if (taskResult.failed()) {
+                    failedFiles.add(taskResult.relativePath() + ": " + taskResult.failureMessage());
+                    listener.onFileProcessed(completed, files.size(), taskResult.relativePath(), true);
+                } else if (taskResult.unchanged()) {
                     filesUnchanged++;
                     totalChunks += taskResult.existingChunkCount();
+                    listener.onFileProcessed(completed, files.size(), taskResult.relativePath(), false);
                 } else if (!taskResult.segments().isEmpty()) {
                     store.removeAll(sourceFilter(taskResult.relativePath()));
                     store.addAll(taskResult.embeddingResponse().content(), taskResult.segments());
@@ -195,6 +241,9 @@ public final class WorkspaceEmbeddingIndex {
                     if (taskResult.embeddingResponse().tokenUsage() != null) {
                         inputTokensUsed += taskResult.embeddingResponse().tokenUsage().inputTokenCount();
                     }
+                    listener.onFileProcessed(completed, files.size(), taskResult.relativePath(), false);
+                } else {
+                    listener.onFileProcessed(completed, files.size(), taskResult.relativePath(), false);
                 }
             }
         }
@@ -210,8 +259,8 @@ public final class WorkspaceEmbeddingIndex {
         cachedStore = new CachedStore(store, Files.getLastModifiedTime(indexFile).toMillis());
 
         long duration = System.currentTimeMillis() - startTime;
-        return new IndexReport(files.size(), filesEmbedded, filesUnchanged, removedSources.size(),
-                totalChunks, inputTokensUsed, config.estimatedCostUsd(inputTokensUsed), duration);
+        return new IndexReport(files.size(), filesEmbedded, filesUnchanged, removedSources.size(), failedFiles.size(),
+                List.copyOf(failedFiles), totalChunks, inputTokensUsed, config.estimatedCostUsd(inputTokensUsed), duration);
     }
 
     public static final double DEFAULT_MIN_SCORE = 0.0;
