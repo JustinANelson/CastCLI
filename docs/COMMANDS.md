@@ -93,6 +93,10 @@ Model names are examples, not hard requirements. Any server with an OpenAI-compa
 ./gradlew.bat run --args='memory list --limit 20'
 ./gradlew.bat run --args='memory forget <id> --version <version>'
 
+# Session action summarization and long-term memory turnover
+./gradlew.bat run --args='session summarize --session-id s1 --role Coder "Implemented feature X"'
+./gradlew.bat run --args='session recall --query "feature X"'
+
 # Evaluate routing and tool-selection policy without calling a model
 ./gradlew.bat run --args='route-eval evals/routing.example.json'
 

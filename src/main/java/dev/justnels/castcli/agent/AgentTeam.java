@@ -2,6 +2,9 @@ package dev.justnels.castcli.agent;
 
 import dev.justnels.castcli.config.HarnessConfig;
 import dev.justnels.castcli.config.ModelTier;
+import dev.justnels.castcli.memory.SessionAction;
+import dev.justnels.castcli.memory.SessionMemorySummarizer;
+import dev.justnels.castcli.memory.SqliteMemoryStore;
 import dev.justnels.castcli.orchestration.CostSavingsEstimator;
 import dev.justnels.castcli.orchestration.HarnessOrchestrator;
 import dev.justnels.castcli.orchestration.TaskRequest;
@@ -45,6 +48,7 @@ public final class AgentTeam {
     private final HarnessOrchestrator orchestrator;
     private final CheckpointStore checkpointStore;
     private final CostSavingsEstimator savingsEstimator;
+    private final SessionMemorySummarizer sessionSummarizer;
 
     public AgentTeam(HarnessConfig config) {
         this(config, new HarnessOrchestrator(config));
@@ -59,6 +63,15 @@ public final class AgentTeam {
         this.orchestrator = orchestrator;
         this.checkpointStore = checkpointStore;
         this.savingsEstimator = new CostSavingsEstimator(config);
+        if (config.memory().enabled()) {
+            Path workspace = Path.of(config.tools().workspaceRoot()).toAbsolutePath().normalize();
+            Path configuredMemory = Path.of(config.memory().databasePath());
+            Path dbPath = configuredMemory.isAbsolute() ? configuredMemory : workspace.resolve(configuredMemory);
+            this.sessionSummarizer = new SessionMemorySummarizer(
+                    new SqliteMemoryStore(dbPath), orchestrator, config.memory().defaultNamespace());
+        } else {
+            this.sessionSummarizer = null;
+        }
     }
 
     /** Mutable per-run accumulators, folded across every PM and worker call in a single commission run. */
@@ -165,6 +178,17 @@ public final class AgentTeam {
         String commissioningSummary = generateCommissioningReport(finalGoal, completed, metrics);
         checkpointPath = persistCheckpoint(finalGoal, plan, completed);
         long totalDurationMs = System.currentTimeMillis() - startTime;
+
+        if (sessionSummarizer != null && !completed.isEmpty()) {
+            List<SessionAction> sessionActions = completed.stream()
+                    .map(t -> new SessionAction(
+                            finalGoal,
+                            t.assignedRole().name(),
+                            t.title(),
+                            t.output()))
+                    .toList();
+            sessionSummarizer.summarizeSessionAsync(finalGoal, "PM", sessionActions);
+        }
 
         return new CommissioningResult(
                 plan, completed, commissioningSummary, totalDurationMs,

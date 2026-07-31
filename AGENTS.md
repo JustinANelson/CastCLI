@@ -45,6 +45,13 @@ Run the narrowest relevant check first:
 Run the delegation audit after substantial coding work when CastCLI was available and eligible. For A/B token
 comparisons, use fresh sessions with equivalent model, reasoning effort, prompt, and repository state.
 
+## Multi-agent and multi-session memory turnover
+
+When starting a session from scratch or switching between agents/roles:
+- Call `recall_session_memory` (or `recall_context` with topic query "session turnover") to retrieve past session action summaries, decisions, and pending next steps from the local long-term memory store.
+- Before ending a substantial session turn or handing off work to another agent, call `summarize_session` (or `remember_context`) to record completed session actions, key architectural decisions, modified files, and remaining work.
+- Background local LLM summarization automatically condenses session action streams into durable long-term memory records for seamless agent turnover.
+
 ## Persistent work checklist
 
 Maintain `docs/WORK_CHECKLIST.md` for multi-step work, work likely to span turns, or any turn ending with unfinished

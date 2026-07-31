@@ -12,6 +12,7 @@ import dev.justnels.castcli.doctor.BuildInfo;
 import dev.justnels.castcli.index.IndexerIgnoreConfig;
 import dev.justnels.castcli.index.WorkspaceEmbeddingIndex;
 import dev.justnels.castcli.model.EmbeddingModelFactory;
+import dev.justnels.castcli.memory.SessionMemorySummarizer;
 import dev.justnels.castcli.memory.SqliteMemoryStore;
 import dev.justnels.castcli.orchestration.HarnessOrchestrator;
 import dev.justnels.castcli.orchestration.TaskRequest;
@@ -288,9 +289,11 @@ public final class McpStdioServer {
                 Path.of(config.tools().workspaceRoot()), config.tools().maxFileBytes());
         Path workspace = Path.of(config.tools().workspaceRoot()).toAbsolutePath().normalize();
         Path configuredMemory = Path.of(config.memory().databasePath());
-        MemoryTools memoryTools = new MemoryTools(new SqliteMemoryStore(
-                configuredMemory.isAbsolute() ? configuredMemory : workspace.resolve(configuredMemory)),
-                config.memory().defaultNamespace());
+        SqliteMemoryStore sqliteMemoryStore = new SqliteMemoryStore(
+                configuredMemory.isAbsolute() ? configuredMemory : workspace.resolve(configuredMemory));
+        SessionMemorySummarizer sessionSummarizer = new SessionMemorySummarizer(
+                sqliteMemoryStore, cheapOrchestrator, config.memory().defaultNamespace());
+        MemoryTools memoryTools = new MemoryTools(sqliteMemoryStore, config.memory().defaultNamespace(), sessionSummarizer);
 
         registerAskLocal(cheapOrchestrator, config.routing().maxContextChars());
         registerListModels(cheapOnlyConfig);
@@ -313,6 +316,15 @@ public final class McpStdioServer {
         registerTool("recall_context", "Recalls workspace decisions and insights matching a query from shared memory (.cast/memory/).",
                 schema(Map.of("query", "string", "maxResults", "integer")), args ->
                         memoryTools.recallContext(args.path("query").asText(""), args.path("maxResults").asInt(10)));
+        registerTool("summarize_session", "Summarizes session actions using the local LLM in the background and saves to long-term memory.",
+                schema(Map.of("sessionId", "string", "agentRole", "string", "actionsContent", "string")), args ->
+                        memoryTools.summarizeSession(
+                                args.path("sessionId").asText("default-session"),
+                                args.path("agentRole").asText("Agent"),
+                                args.path("actionsContent").asText("")));
+        registerTool("recall_session_memory", "Recalls long-term session summaries and turnover context across sessions and agents.",
+                schema(Map.of("query", "string", "maxResults", "integer")), args ->
+                        memoryTools.recallSessionMemory(args.path("query").asText(""), args.path("maxResults").asInt(10)));
 
         if (config.embeddings().enabled()) {
             WorkspaceEmbeddingIndex embeddingIndex = new WorkspaceEmbeddingIndex(

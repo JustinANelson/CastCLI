@@ -73,7 +73,8 @@ class McpStdioServerTest {
         List<String> toolNames = toolsList.findValuesAsText("name");
         assertThat(toolNames).contains("ask_local", "summarize_files", "analyze_failure", "draft_patch",
                 "generate_tests", "review_diff", "map_change_impact", "list_models", "read_workspace_file",
-                "list_workspace_files", "search_workspace", "remember_context", "recall_context");
+                "list_workspace_files", "search_workspace", "remember_context", "recall_context",
+                "summarize_session", "recall_session_memory");
 
         JsonNode askLocalSchema = toolsList.findValues("inputSchema").get(toolNames.indexOf("ask_local"));
         assertThat(askLocalSchema.path("required").toString()).contains("\"prompt\"");

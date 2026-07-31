@@ -16,6 +16,8 @@ import dev.justnels.castcli.memory.MemoryDraft;
 import dev.justnels.castcli.memory.MemoryEntry;
 import dev.justnels.castcli.memory.MemoryQuery;
 import dev.justnels.castcli.memory.MemoryStore;
+import dev.justnels.castcli.memory.SessionAction;
+import dev.justnels.castcli.memory.SessionMemorySummarizer;
 import dev.justnels.castcli.memory.SqliteMemoryStore;
 import dev.justnels.castcli.mcp.McpClientManager;
 import dev.justnels.castcli.mcp.McpStdioServer;
@@ -48,6 +50,7 @@ import picocli.CommandLine.Parameters;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.concurrent.Callable;
 
 @Command(
@@ -56,7 +59,7 @@ import java.util.concurrent.Callable;
         mixinStandardHelpOptions = true,
         versionProvider = CastCli.VersionProvider.class,
         subcommands = {CastCli.Ask.class, CastCli.Models.class, CastCli.Commission.class, CastCli.McpServe.class,
-                CastCli.Index.class, CastCli.RouteEval.class, CastCli.Memory.class, CastCli.Telemetry.class,
+                CastCli.Index.class, CastCli.RouteEval.class, CastCli.Memory.class, CastCli.SessionCmd.class, CastCli.Telemetry.class,
                 CastCli.McpUsage.class, CastCli.Doctor.class, CastCli.HealthServer.class, CastCli.Gateway.class,
                 CastCli.Completion.class, CastCli.ConfigCmd.class, CastCli.Init.class})
 public final class CastCli implements Runnable {
@@ -603,6 +606,64 @@ public final class CastCli implements Runnable {
         private static void printMemory(MemoryEntry entry) {
             System.out.printf("%s v%d [%s/%s] %s - %s%n%s%n%n", entry.id(), entry.version(), entry.namespace(),
                     entry.scope(), entry.topic(), entry.author(), entry.content());
+        }
+    }
+
+    @Command(name = "session", description = "Manage session action summaries and long-term memory turnover.", mixinStandardHelpOptions = true,
+            subcommands = {SessionCmd.Summarize.class, SessionCmd.Recall.class})
+    static final class SessionCmd implements Runnable {
+        @CommandLine.ParentCommand private CastCli parent;
+        @Override public void run() { CommandLine.usage(this, System.out); }
+
+        @Command(name = "summarize", description = "Summarize session actions using the local LLM and save to long-term memory.")
+        static final class Summarize implements Callable<Integer> {
+            @CommandLine.ParentCommand private SessionCmd sessionParent;
+            @Option(names = "--session-id", defaultValue = "default-session", description = "Session ID to associate with the summary.")
+            private String sessionId;
+            @Option(names = "--role", defaultValue = "Developer", description = "Agent or caller role for the session.")
+            private String role;
+            @Parameters(index = "0", description = "Actions content or prompt to summarize")
+            private String content;
+
+            @Override public Integer call() throws Exception {
+                HarnessConfig config = sessionParent.parent.loadConfig();
+                try (MemoryStore store = openMemory(config)) {
+                    HarnessOrchestrator orchestrator = new HarnessOrchestrator(config);
+                    try (SessionMemorySummarizer summarizer = new SessionMemorySummarizer(store, orchestrator, "session")) {
+                        MemoryEntry entry = summarizer.summarizeSession(sessionId, role,
+                                List.of(new SessionAction(sessionId, role, "CLI Action", content)));
+                        System.out.println("Session summary saved to long-term memory topic '" + entry.topic() + "' [ID: " + entry.id() + "]");
+                        System.out.println(entry.content());
+                    }
+                }
+                return 0;
+            }
+        }
+
+        @Command(name = "recall", description = "Recall session turnover summaries from long-term memory.")
+        static final class Recall implements Callable<Integer> {
+            @CommandLine.ParentCommand private SessionCmd sessionParent;
+            @Option(names = "--limit", defaultValue = "10", description = "Max results to return.")
+            private int limit;
+            @Option(names = "--query", defaultValue = "", description = "Search query.")
+            private String query;
+
+            @Override public Integer call() throws Exception {
+                HarnessConfig config = sessionParent.parent.loadConfig();
+                try (MemoryStore store = openMemory(config)) {
+                    try (SessionMemorySummarizer summarizer = new SessionMemorySummarizer(store, null, "session")) {
+                        List<MemoryEntry> entries = summarizer.recallSessionMemory(query, limit);
+                        if (entries.isEmpty()) {
+                            System.out.println("No session turnover memories found.");
+                        } else {
+                            for (MemoryEntry entry : entries) {
+                                Memory.printMemory(entry);
+                            }
+                        }
+                    }
+                }
+                return 0;
+            }
         }
     }
 

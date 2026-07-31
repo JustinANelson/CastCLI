@@ -124,6 +124,7 @@ and include scope, tags, provenance, importance, confidence, expiry, read-only s
 
 Search combines lexical overlap with a deterministic local vector index and metadata weights. Before a model
 call, `MemoryContextProvider` retrieves relevant project memories and appends them as bounded, untrusted context.
+`SessionMemorySummarizer` tracks `SessionAction` streams and invokes the local LLM (`SMALL_LOCAL` tier) in the background to asynchronously produce structured session action summaries and save them to the long-term memory store under namespace `session` and scope `session-turnover`, facilitating multi-agent and multi-session context handoffs.
 The MCP and Java tool paths share the same database. Secret-pattern rejection, expiry/retention cleanup,
 read-only records, and version checks prevent the common accidental-leak and lost-update failure modes.
 
