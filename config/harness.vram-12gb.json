@@ -55,6 +55,24 @@
     "maxCostUsdPerTask": 1.0,
     "maxCumulativeCostUsd": 20.0,
     "maxRequestsPerMinute": 30
+  },
+  "embeddings": {
+    "enabled": true,
+    "baseUrl": "${OLLAMA_BASE_URL:http://localhost:11434/v1/}",
+    "modelName": "qwen3-embedding:0.6b",
+    "apiKeyEnv": null,
+    "timeoutSeconds": 60,
+    "chunkLines": 60,
+    "chunkOverlapLines": 10,
+    "maxFileBytes": 300000,
+    "excludeGlobs": [
+      "**/.git/**", "**/build/**", "**/.gradle/**", "**/.harness/**", "**/.cast/**", "**/node_modules/**",
+      "**/dist/**", "**/target/**", "**/.idea/**", "**/.vs/**",
+      "**/credentials.json", "**/credentials*.json", "**/*secret*", "**/*.pem", "**/*.key",
+      "**/.env", "**/.env.*", "**/id_rsa*", "**/*.p12", "**/*.pfx"
+    ],
+    "indexPath": ".cast/index/workspace-embeddings.json",
+    "costPerMillionInputTokens": 0.0
   }
 }
 

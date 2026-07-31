@@ -54,7 +54,7 @@ class InitServiceTest {
         assertThat(target).exists();
 
         List<String> models = service.localModelNames(target);
-        assertThat(models).contains("qwen2.5-coder:1.5b", "deepseek-r1:8b");
+        assertThat(models).contains("qwen2.5-coder:1.5b", "deepseek-r1:8b", "qwen3-embedding:0.6b");
 
         String baseUrl = service.firstLocalBaseUrl(target);
         assertThat(baseUrl).contains("localhost");
@@ -78,7 +78,7 @@ class InitServiceTest {
         assertThat(report.writtenConfigPath()).isEqualTo(target);
         assertThat(report.ollamaReachable()).isFalse();
         assertThat(report.requiredLocalModels()).isNotEmpty();
-        assertThat(report.missingModels()).isEqualTo(report.requiredLocalModels());
+        assertThat(report.missingModels()).containsExactlyInAnyOrder("qwen2.5-coder:1.5b", "deepseek-r1:8b", "qwen3-embedding:0.6b");
         assertThat(Files.exists(target)).isTrue();
     }
 
@@ -204,7 +204,7 @@ class InitServiceTest {
             assertThat(report.substitutedModels())
                     .containsEntry("qwen2.5-coder:1.5b", "qwen2.5-coder:1.5b-instruct");
             assertThat(report.requiredLocalModels()).contains("qwen2.5-coder:1.5b-instruct");
-            assertThat(report.missingModels()).containsExactly("deepseek-r1:8b");
+            assertThat(report.missingModels()).containsExactlyInAnyOrder("deepseek-r1:8b", "qwen3-embedding:0.6b");
             assertThat(service.localModelNames(target)).contains("qwen2.5-coder:1.5b-instruct");
         } finally {
             server.stop(0);

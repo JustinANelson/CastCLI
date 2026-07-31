@@ -265,6 +265,14 @@ public final class InitService {
                 }
             }
         }
+        JsonNode embeddings = root.path("embeddings");
+        if (!embeddings.isMissingNode() && embeddings.path("enabled").asBoolean(false)) {
+            String baseUrl = embeddings.path("baseUrl").asText("");
+            String modelName = embeddings.path("modelName").asText(null);
+            if (modelName != null && isLocalUrl(baseUrl) && !models.contains(modelName)) {
+                models.add(modelName);
+            }
+        }
         return models;
     }
 
