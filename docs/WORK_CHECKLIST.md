@@ -2,14 +2,16 @@
 
 ## Current objective
 
-Implement efficiency recommendations for session memory turnover (on-demand semantic retrieval & multi-namespace pre-flight prompt augmentation).
+Implement 4 local LLM offloading & memory management enhancements (`LocalReworkVerifier`, `LocalMemoryCleaner`, `LocalContextCompressor`, `LocalPreFlightClassifier`).
 
 ## Checklist
 
-- [x] Update `MemoryContextProvider` to perform multi-namespace hybrid search across project and session memory with strict context bounds.
-- [x] Refine `AGENTS.md` instructions for query-driven semantic session turnover retrieval.
-- [x] Add unit test verifying multi-namespace prompt augmentation in `MemoryContextProviderTest`.
-- [x] Run `.\gradlew.bat test` and `.\gradlew.bat check` to verify changes.
+- [x] Obtain user review and approval for `implementation_plan.md`.
+- [x] Implement `LocalReworkVerifier` for self-correcting local model execution loops.
+- [x] Implement `LocalMemoryCleaner` for background session memory consolidation and deduplication.
+- [x] Implement `LocalContextCompressor` for dense tool output/log compression.
+- [x] Implement `LocalPreFlightClassifier` for automatic local tier offloading.
+- [x] Add unit tests for all 4 new components and verify with `.\gradlew.bat test` and `.\gradlew.bat check`.
 
 ## Blockers and open decisions
 

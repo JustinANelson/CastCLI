@@ -12,6 +12,7 @@ import dev.justnels.castcli.config.ProviderConfig;
 import dev.justnels.castcli.index.WorkspaceEmbeddingIndex;
 import dev.justnels.castcli.evaluation.RoutingEvaluationReport;
 import dev.justnels.castcli.evaluation.RoutingEvaluator;
+import dev.justnels.castcli.memory.LocalMemoryCleaner;
 import dev.justnels.castcli.memory.MemoryDraft;
 import dev.justnels.castcli.memory.MemoryEntry;
 import dev.justnels.castcli.memory.MemoryQuery;
@@ -583,12 +584,21 @@ public final class CastCli implements Runnable {
             private int retentionDays;
             @Option(names = "--backup-path", description = "Optional destination file path for creating an online SQLite backup snapshot.")
             private Path backupPath;
+            @Option(names = "--consolidate", description = "Consolidate duplicate/fragmented session memories using local LLM summarization.")
+            private boolean consolidate;
 
             @Override public Integer call() throws Exception {
                 HarnessConfig config = memory.parent.loadConfig();
                 try (MemoryStore store = openMemory(config)) {
                     int expiredPurged = store.purgeExpired();
                     int retentionPurged = store.purgeOlderThan(retentionDays);
+                    if (consolidate) {
+                        HarnessOrchestrator orchestrator = new HarnessOrchestrator(config);
+                        LocalMemoryCleaner cleaner = new LocalMemoryCleaner(store, orchestrator, "session");
+                        LocalMemoryCleaner.CleaningReport report = cleaner.cleanAndConsolidate();
+                        System.out.printf("Memory consolidation complete: %d inspected, %d consolidated, %d purged.%n",
+                                report.totalInspected(), report.entriesConsolidated(), report.entriesPurged());
+                    }
                     if (store instanceof SqliteMemoryStore sqliteStore) {
                         sqliteStore.optimize();
                         if (backupPath != null) {
