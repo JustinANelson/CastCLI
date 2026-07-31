@@ -39,19 +39,23 @@ public final class CostSavingsEstimator {
     }
 
     /**
-     * Resolves the best-match enabled provider for a caller model name string.
-     * Searches all enabled providers by case-insensitive {@code modelName} equality, then falls back
-     * to the default FRONTIER_CLOUD reference provider. Returns empty when no reference is available.
+     * Resolves the best-match provider for a caller model name string.
+     * Searches all providers by case-insensitive {@code modelName} equality, then falls back
+     * to the default FRONTIER_CLOUD provider (enabled or disabled reference spec).
      */
     public Optional<ProviderConfig> resolveCallerProvider(String callerModel) {
         if (callerModel != null && !callerModel.isBlank()) {
             Optional<ProviderConfig> byName = config.providers().stream()
-                    .filter(ProviderConfig::enabled)
                     .filter(p -> callerModel.equalsIgnoreCase(p.modelName()))
                     .findFirst();
             if (byName.isPresent()) return byName;
         }
-        return Optional.ofNullable(referenceFrontierProvider);
+        if (referenceFrontierProvider != null) {
+            return Optional.of(referenceFrontierProvider);
+        }
+        return config.providers().stream()
+                .filter(p -> p.tier() == ModelTier.FRONTIER_CLOUD)
+                .findFirst();
     }
 
     /** True when {@code actualProvider} is a tier whose tokens would otherwise count as "offloaded" from

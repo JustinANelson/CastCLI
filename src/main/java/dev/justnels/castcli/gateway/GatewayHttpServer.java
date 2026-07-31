@@ -39,7 +39,7 @@ public final class GatewayHttpServer implements AutoCloseable {
                             + "' without a --token; the gateway must fail closed for non-loopback use.");
         }
         ObjectMapper mapper = new ObjectMapper();
-        this.server = HttpServer.create(new InetSocketAddress(bindAddress, port), 0);
+        this.server = HttpServer.create(new InetSocketAddress(bindAddress, port), 128);
         this.server.setExecutor(Executors.newVirtualThreadPerTaskExecutor());
         this.server.createContext("/v1/chat/completions",
                 new AuthenticatingHandler(bearerToken, new ChatCompletionsHandler(orchestrator, mapper), mapper));

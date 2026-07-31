@@ -371,8 +371,18 @@ public final class SqliteMemoryStore implements MemoryStore {
         try (Connection connection = open();
              Statement statement = connection.createStatement()) {
             statement.execute("PRAGMA optimize;");
+            statement.execute("PRAGMA wal_checkpoint(PASSIVE);");
         } catch (Exception e) {
             throw memoryFailure("optimize database", e);
+        }
+    }
+
+    public void checkpointWal() {
+        try (Connection connection = open();
+             Statement statement = connection.createStatement()) {
+            statement.execute("PRAGMA wal_checkpoint(PASSIVE);");
+        } catch (Exception ignored) {
+            // Passive checkpoint best-effort
         }
     }
 
