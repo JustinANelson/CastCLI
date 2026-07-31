@@ -16,9 +16,12 @@ import dev.langchain4j.store.embedding.inmemory.InMemoryEmbeddingStore;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.FileSystems;
+import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.PathMatcher;
+import java.nio.file.SimpleFileVisitor;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
@@ -33,7 +36,6 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.stream.Stream;
 
 /**
  * Builds and queries a persisted semantic (embedding-based) index of workspace source files, so agents can
@@ -97,6 +99,9 @@ public final class WorkspaceEmbeddingIndex {
     public interface ProgressListener {
         ProgressListener NO_OP = new ProgressListener() { };
 
+        /** Called before scanning workspace files for indexing. */
+        default void onScanStarted() { }
+
         /** Called once, right after the file scan completes and before any embedding begins. */
         default void onScanComplete(int totalFiles) { }
 
@@ -127,6 +132,7 @@ public final class WorkspaceEmbeddingIndex {
      * {@code rebuild()} call, since they aren't recorded as unchanged. */
     public IndexReport rebuild(ProgressListener listener) throws IOException {
         long startTime = System.currentTimeMillis();
+        listener.onScanStarted();
         ShardedEmbeddingStore store = Files.isRegularFile(indexFile) || Files.isDirectory(ShardedEmbeddingStore.computeShardsDir(indexFile))
                 ? ShardedEmbeddingStore.load(indexFile)
                 : new ShardedEmbeddingStore(indexFile);
@@ -400,20 +406,49 @@ public final class WorkspaceEmbeddingIndex {
                 ? GitIgnoreMatcher.load(workspaceRoot)
                 : null;
 
-        try (Stream<Path> paths = Files.walk(workspaceRoot)) {
-            return paths.filter(Files::isRegularFile)
-                    .filter(this::isSmallEnough)
-                    .filter(path -> {
-                        Path relative = workspaceRoot.relativize(path);
-                        String relativeStr = relative.toString().replace('\\', '/');
-                        if (gitIgnoreMatcher != null && gitIgnoreMatcher.isIgnored(relativeStr, false)) {
-                            return false;
-                        }
-                        return includeMatchers.stream().anyMatch(m -> m.matches(relative))
-                                && excludeMatchers.stream().noneMatch(m -> m.matches(relative));
-                    })
-                    .toList();
-        }
+        List<Path> result = new ArrayList<>();
+
+        Files.walkFileTree(workspaceRoot, new SimpleFileVisitor<Path>() {
+            @Override
+            public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) throws IOException {
+                if (dir.equals(workspaceRoot)) {
+                    return FileVisitResult.CONTINUE;
+                }
+                Path relative = workspaceRoot.relativize(dir);
+                String relativeStr = relative.toString().replace('\\', '/') + "/";
+                if (gitIgnoreMatcher != null && gitIgnoreMatcher.isIgnored(relativeStr, true)) {
+                    return FileVisitResult.SKIP_SUBTREE;
+                }
+                if (excludeMatchers.stream().anyMatch(m -> m.matches(relative))) {
+                    return FileVisitResult.SKIP_SUBTREE;
+                }
+                return FileVisitResult.CONTINUE;
+            }
+
+            @Override
+            public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
+                if (!attrs.isRegularFile() || attrs.size() > config.maxFileBytes()) {
+                    return FileVisitResult.CONTINUE;
+                }
+                Path relative = workspaceRoot.relativize(file);
+                String relativeStr = relative.toString().replace('\\', '/');
+                if (gitIgnoreMatcher != null && gitIgnoreMatcher.isIgnored(relativeStr, false)) {
+                    return FileVisitResult.CONTINUE;
+                }
+                if (includeMatchers.stream().anyMatch(m -> m.matches(relative))
+                        && excludeMatchers.stream().noneMatch(m -> m.matches(relative))) {
+                    result.add(file);
+                }
+                return FileVisitResult.CONTINUE;
+            }
+
+            @Override
+            public FileVisitResult visitFileFailed(Path file, IOException exc) {
+                return FileVisitResult.CONTINUE;
+            }
+        });
+
+        return result;
     }
 
     /** For each {@code **}/-prefixed glob, also builds a matcher for the bare suffix, since

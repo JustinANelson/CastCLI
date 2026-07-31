@@ -904,15 +904,18 @@ public final class CastCli implements Runnable {
         }
 
         /** Prints indexing progress to stderr so a long-running index build on a large codebase (or a
-         * slow/cold local embedding backend) doesn't look like it has hung. Regular progress lines are
-         * throttled to roughly once a second; failures are reported immediately as they happen. */
+         * slow/cold local embedding backend) doesn't look like it has hung. Shows scan status immediately,
+         * a visual progress bar, percentage, and current file name as files are processed. */
         private static final class IndexProgressPrinter implements WorkspaceEmbeddingIndex.ProgressListener {
-            /** Above this file count, a cold full index is likely to take a while; warn up front so a
-             * subsequent timeout doesn't come as a surprise. */
             private static final int LARGE_REPO_FILE_WARNING_THRESHOLD = 300;
-            private static final long PROGRESS_PRINT_INTERVAL_NANOS = 1_000_000_000L;
+            private static final long PROGRESS_PRINT_INTERVAL_NANOS = 200_000_000L;
 
             private long lastPrintNanos = Long.MIN_VALUE;
+
+            @Override
+            public void onScanStarted() {
+                System.err.println("Scanning workspace for source files...");
+            }
 
             @Override
             public void onScanComplete(int totalFiles) {
@@ -929,13 +932,24 @@ public final class CastCli implements Runnable {
             @Override
             public void onFileProcessed(int completed, int total, String relativePath, boolean failed) {
                 if (failed) {
-                    System.err.printf("[%d/%d] FAILED to embed %s (will retry next run)%n", completed, total, relativePath);
+                    System.err.printf("%n[%d/%d] FAILED to embed %s (will retry next run)%n", completed, total, relativePath);
                     return;
                 }
                 long now = System.nanoTime();
                 if (completed == total || now - lastPrintNanos >= PROGRESS_PRINT_INTERVAL_NANOS) {
                     lastPrintNanos = now;
-                    System.err.printf("[%d/%d] indexed%n", completed, total);
+                    int percent = total > 0 ? (completed * 100) / total : 100;
+                    int barWidth = 20;
+                    int filled = total > 0 ? (completed * barWidth) / total : barWidth;
+                    String bar = "=".repeat(Math.max(0, filled)) + (filled < barWidth ? ">" : "") + " ".repeat(Math.max(0, barWidth - filled - (filled < barWidth ? 1 : 0)));
+                    String fileSnippet = relativePath.length() > 40 ? "..." + relativePath.substring(relativePath.length() - 37) : relativePath;
+
+                    System.err.printf("\rIndexing workspace: [%-20s] %3d%% (%d/%d) | %-40s",
+                            bar, percent, completed, total, fileSnippet);
+
+                    if (completed == total) {
+                        System.err.println();
+                    }
                 }
             }
         }
