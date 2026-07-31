@@ -23,6 +23,41 @@ class WorkspaceToolsTest {
     }
 
     @Test
+    void boundsIndividualSearchResultLines() throws Exception {
+        Files.writeString(root.resolve("Large.java"), "needle " + "x".repeat(2_000));
+        WorkspaceTools tools = new WorkspaceTools(root, 4_096);
+
+        String match = tools.searchWorkspace("needle", 10).getFirst();
+
+        assertThat(match).endsWith("...[truncated]");
+        assertThat(match.length()).isLessThan(450);
+    }
+
+    @Test
+    void boundsFileRetrievalBeforePromptAssembly() throws Exception {
+        Files.writeString(root.resolve("Large.java"), "x".repeat(2_000));
+        WorkspaceTools tools = new WorkspaceTools(root, 4_096);
+
+        String content = tools.readWorkspaceFile("Large.java", 100);
+
+        assertThat(content).hasSize(100).endsWith("[file content omitted by retrieval budget]");
+    }
+
+    @Test
+    void excludesGeneratedTreesFromListingAndSearch() throws Exception {
+        Files.createDirectories(root.resolve("src"));
+        Files.createDirectories(root.resolve("build/generated"));
+        Files.writeString(root.resolve("src/Source.java"), "needle");
+        Files.writeString(root.resolve("build/generated/Generated.java"), "needle");
+        WorkspaceTools tools = new WorkspaceTools(root, 1_024);
+
+        assertThat(tools.searchWorkspace("needle", 10))
+                .containsExactly(Path.of("src", "Source.java") + ":1:needle");
+        assertThat(tools.listWorkspaceFiles("**/*.java", 10))
+                .containsExactly(Path.of("src", "Source.java").toString());
+    }
+
+    @Test
     void rejectsPathTraversal() {
         WorkspaceTools tools = new WorkspaceTools(root, 1024);
         assertThatThrownBy(() -> tools.readWorkspaceFile("../secret.txt"))

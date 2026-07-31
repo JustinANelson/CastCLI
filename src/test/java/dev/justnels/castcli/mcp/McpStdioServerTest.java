@@ -21,7 +21,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicInteger;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class McpStdioServerTest {
@@ -251,6 +253,106 @@ class McpStdioServerTest {
                 .readSince(0);
         assertThat(usage).hasSize(1);
         assertThat(usage.getFirst().callerModel()).isNull();
+    }
+
+    @Test
+    void impactMappingBudgetsLargeSearchBeforeDispatchAndBoundsOutput() throws Exception {
+        Files.writeString(workspace.resolve("Large.java"),
+                ("ReadOnlyDelegationTools " + "x".repeat(1_000) + "\n").repeat(30));
+        ProviderConfig provider = new ProviderConfig("small", ModelTier.SMALL_LOCAL, "http://fake/v1/",
+                "small-model", null, 0.1, 30, true, true);
+        HarnessConfig config = new HarnessConfig(List.of(provider), new RoutingConfig(240, true),
+                new ToolConfig(workspace.toString(), 100_000, false));
+        AtomicReference<TaskRequest> captured = new AtomicReference<>();
+        HarnessOrchestrator fakeOrchestrator = new HarnessOrchestrator(config) {
+            @Override public Outcome run(TaskRequest task) {
+                captured.set(task);
+                return new Outcome(provider, "result".repeat(2_000), List.of(), List.of(), 5, false,
+                        100, 20, 0, "1234567890abcdef1234567890abcdef");
+            }
+        };
+        String request = """
+                {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"map_change_impact","arguments":{"symbol":"ReadOnlyDelegationTools","maxResults":24}}}
+                """;
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        new McpStdioServer(config, new ByteArrayInputStream(
+                (handshake() + request).getBytes(StandardCharsets.UTF_8)),
+                new PrintStream(out, true, StandardCharsets.UTF_8), fakeOrchestrator).serve();
+
+        JsonNode result = out.toString(StandardCharsets.UTF_8).lines().map(this::readTree).toList()
+                .getLast().path("result");
+
+        assertThat(result.path("isError").asBoolean()).isFalse();
+        assertThat(captured.get().prompt().length()).isLessThanOrEqualTo(8_400);
+        assertThat(result.path("content").get(0).path("text").asText().length()).isLessThanOrEqualTo(4_000);
+        assertThat(result.path("_meta").path("castcli/resultTruncated").asBoolean()).isTrue();
+    }
+
+    @Test
+    void identicalFailedDelegationIsSuppressedAndSignalsDirectFallback() throws Exception {
+        ProviderConfig provider = new ProviderConfig("small", ModelTier.SMALL_LOCAL, "http://fake/v1/",
+                "small-model", null, 0.1, 30, true, true);
+        HarnessConfig config = new HarnessConfig(List.of(provider), new RoutingConfig(240, true),
+                new ToolConfig(workspace.toString(), 100_000, false));
+        AtomicInteger attempts = new AtomicInteger();
+        HarnessOrchestrator failingOrchestrator = new HarnessOrchestrator(config) {
+            @Override public Outcome run(TaskRequest task) {
+                attempts.incrementAndGet();
+                throw new IllegalStateException("provider unavailable");
+            }
+        };
+        String call = """
+                {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"review_diff","arguments":{"diff":"diff --git a/A.java b/A.java"}}}
+                """;
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        new McpStdioServer(config, new ByteArrayInputStream(
+                (handshake() + call + call.replace("id\":1", "id\":2"))
+                        .getBytes(StandardCharsets.UTF_8)),
+                new PrintStream(out, true, StandardCharsets.UTF_8), failingOrchestrator).serve();
+
+        List<JsonNode> responses = out.toString(StandardCharsets.UTF_8).lines()
+                .map(this::readTree).toList();
+        JsonNode first = responses.get(1).path("result");
+        JsonNode second = responses.get(2).path("result");
+
+        assertThat(attempts).hasValue(1);
+        assertThat(first.path("_meta").path("castcli/fallbackRecommended").asBoolean()).isTrue();
+        assertThat(second.path("_meta").path("castcli/retrySuppressed").asBoolean()).isTrue();
+        assertThat(second.path("_meta").path("castcli/errorType").asText())
+                .isEqualTo("duplicate_suppressed");
+    }
+
+    @Test
+    void multiFileSummaryUsesBoundedPartitionsAndReducer() throws Exception {
+        Files.writeString(workspace.resolve("Large.java"), "class Large {\n" + "int value;\n".repeat(3_000) + "}");
+        ProviderConfig provider = new ProviderConfig("small", ModelTier.SMALL_LOCAL, "http://fake/v1/",
+                "small-model", null, 0.1, 30, true, true);
+        HarnessConfig config = new HarnessConfig(List.of(provider), new RoutingConfig(240, true),
+                new ToolConfig(workspace.toString(), 100_000, false));
+        List<TaskRequest> captured = new CopyOnWriteArrayList<>();
+        HarnessOrchestrator fakeOrchestrator = new HarnessOrchestrator(config) {
+            @Override public Outcome run(TaskRequest task) {
+                captured.add(task);
+                String answer = task.prompt().startsWith("Merge the bounded") ? "merged answer" : "partial answer";
+                return new Outcome(provider, answer, List.of(), List.of(), 5, false,
+                        10, 5, 0, "abcdef1234567890abcdef1234567890");
+            }
+        };
+        String request = """
+                {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"summarize_files","arguments":{"paths":["Large.java"]}}}
+                """;
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        new McpStdioServer(config, new ByteArrayInputStream(
+                (handshake() + request).getBytes(StandardCharsets.UTF_8)),
+                new PrintStream(out, true, StandardCharsets.UTF_8), fakeOrchestrator).serve();
+
+        JsonNode result = out.toString(StandardCharsets.UTF_8).lines().map(this::readTree).toList()
+                .getLast().path("result");
+
+        assertThat(captured).hasSize(5);
+        assertThat(captured).allSatisfy(task -> assertThat(task.prompt().length()).isLessThanOrEqualTo(8_400));
+        assertThat(captured.getLast().prompt()).startsWith("Merge the bounded");
+        assertThat(result.path("content").get(0).path("text").asText()).contains("merged answer");
     }
 
     private JsonNode readTree(String line) {

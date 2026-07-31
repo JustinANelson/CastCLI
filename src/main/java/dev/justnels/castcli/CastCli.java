@@ -451,6 +451,10 @@ public final class CastCli implements Runnable {
                 System.out.println("Estimated frontier equivalent: unavailable (configure an enabled FRONTIER_CLOUD reference provider, or pass _meta.callerModel in tool calls).");
             }
             if (!summary.callsByTool().isEmpty()) System.out.println("Calls by tool: " + summary.callsByTool());
+            summary.performanceByTool().forEach((tool, performance) ->
+                    System.out.printf("  %-20s p50=%dms p95=%dms timeouts=%d context-rejected=%d fallbacks=%d%n",
+                            tool, performance.p50DurationMs(), performance.p95DurationMs(),
+                            performance.timeouts(), performance.contextRejections(), performance.fallbacks()));
             summary.usageByProvider().forEach((provider, usage) ->
                     System.out.printf("  %-20s calls=%d tokens=%d (%d in / %d out) est. $%.5f%n",
                             provider, usage.calls(), usage.totalTokens(), usage.inputTokens(),

@@ -15,9 +15,11 @@ import java.util.Locale;
 import java.util.stream.Stream;
 
 public final class WorkspaceTools {
+    private static final int MAX_SEARCH_LINE_CHARS = 400;
     private static final List<String> MANDATORY_DENY_GLOBS = List.of(
             ".env", ".env.*", "**/.env", "**/.env.*", "**/*.env",
             ".git/**", "**/.git/**", ".cast/**", "**/.cast/**",
+            "**/build/**", "**/.gradle/**", "**/out/**", "**/target/**", "**/node_modules/**",
             "config/harness.local.json", "**/harness.local.json",
             "**/credentials.json", "**/credentials*.json", "**/*-credentials.*", "**/*_credentials.*",
             "**/secret.*", "**/secrets.*", "**/*-secret.*", "**/*_secret.*",
@@ -58,6 +60,29 @@ public final class WorkspaceTools {
             throw new IOException("File exceeds configured limit of " + maxFileBytes + " bytes");
         }
         return Files.readString(resolved, StandardCharsets.UTF_8);
+    }
+
+    public String readWorkspaceFile(String path, int maxChars) throws IOException {
+        if (maxChars < 1) throw new IllegalArgumentException("maxChars must be positive");
+        Path resolved = resolve(path);
+        if (!Files.isRegularFile(resolved)) throw new IOException("Not a regular file: " + path);
+        if (Files.size(resolved) > maxFileBytes) {
+            throw new IOException("File exceeds configured limit of " + maxFileBytes + " bytes");
+        }
+        int limit = (int) Math.min(maxChars, Math.min(maxFileBytes, Integer.MAX_VALUE - 1L));
+        StringBuilder text = new StringBuilder(Math.min(limit + 1, 8_192));
+        char[] buffer = new char[Math.min(limit + 1, 8_192)];
+        try (var reader = Files.newBufferedReader(resolved, StandardCharsets.UTF_8)) {
+            int read;
+            while (text.length() <= limit && (read = reader.read(buffer)) >= 0) {
+                int remaining = limit + 1 - text.length();
+                text.append(buffer, 0, Math.min(read, remaining));
+            }
+        }
+        if (text.length() <= limit) return text.toString();
+        String marker = "\n...[file content omitted by retrieval budget]";
+        if (limit <= marker.length()) return text.substring(0, limit);
+        return text.substring(0, limit - marker.length()) + marker;
     }
 
     @Tool("Lists files inside the workspace using a glob such as **/*.java")
@@ -208,7 +233,8 @@ public final class WorkspaceTools {
             String relative = root.relativize(path).toString();
             return java.util.stream.IntStream.range(0, lines.size())
                     .filter(index -> lines.get(index).contains(query))
-                    .mapToObj(index -> relative + ":" + (index + 1) + ":" + lines.get(index).trim());
+                    .mapToObj(index -> relative + ":" + (index + 1) + ":"
+                            + boundedSearchLine(lines.get(index).trim()));
         } catch (IOException | RuntimeException ignored) {
             return Stream.empty();
         }
@@ -219,6 +245,11 @@ public final class WorkspaceTools {
             throw new IllegalArgumentException("maxResults must be between 1 and 500");
         }
         return maxResults;
+    }
+
+    private static String boundedSearchLine(String line) {
+        if (line.length() <= MAX_SEARCH_LINE_CHARS) return line;
+        return line.substring(0, MAX_SEARCH_LINE_CHARS) + "...[truncated]";
     }
 }
 

@@ -8,6 +8,7 @@ import dev.justnels.castcli.cache.DeterministicResultCache;
 import dev.justnels.castcli.config.HarnessConfig;
 import dev.justnels.castcli.config.ModelTier;
 import dev.justnels.castcli.config.ProviderConfig;
+import dev.justnels.castcli.config.ReliabilityConfig;
 import dev.justnels.castcli.config.ToolConfig;
 import dev.justnels.castcli.doctor.BuildInfo;
 import dev.justnels.castcli.index.IndexerIgnoreConfig;
@@ -38,6 +39,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.TimeUnit;
 
 /**
  * A minimal MCP server speaking newline-delimited JSON-RPC 2.0 over
@@ -53,6 +57,8 @@ public final class McpStdioServer {
     private static final String PROTOCOL_VERSION = "2025-11-25";
     private static final List<String> SUPPORTED_PROTOCOL_VERSIONS = List.of(
             "2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05");
+    private static final long FAILED_REQUEST_TTL_MILLIS = TimeUnit.MINUTES.toMillis(5);
+    private static final int MAX_MCP_DELEGATION_SECONDS = 60;
 
     private final ObjectMapper mapper = new ObjectMapper();
     private final Map<String, McpTool> tools = new LinkedHashMap<>();
@@ -63,6 +69,8 @@ public final class McpStdioServer {
     private final boolean auditEnabled;
     private final boolean includeResponseMetadata;
     private final DeterministicResultCache resultCache = new DeterministicResultCache();
+    private final ConcurrentMap<String, Long> recentFailedDelegations = new ConcurrentHashMap<>();
+    private final int maxToolResultChars;
     private boolean initializeResponded;
     private boolean initialized;
 
@@ -83,6 +91,7 @@ public final class McpStdioServer {
         this.telemetry = CastTelemetry.initialize(config.observability(), workspace);
         this.auditEnabled = config.mcpAudit().enabled();
         this.includeResponseMetadata = config.mcpAudit().includeResponseMetadata();
+        this.maxToolResultChars = Math.max(1_000, Math.min(4_000, config.routing().maxContextChars() / 3));
         this.usageStore = new McpUsageStore(McpUsageStore.resolvePath(config.mcpAudit(), workspace));
         registerTools(config, askLocalOrchestrator);
     }
@@ -231,10 +240,11 @@ public final class McpStdioServer {
         JsonNode arguments = params.path("arguments");
         String argString = arguments == null ? "" : arguments.toString();
         boolean isReadOnly = isCacheableTool(name);
+        String failureKey = isDelegationTool(name) ? telemetry.promptHash(name + "\n" + argString) : null;
         if (isReadOnly) {
             Optional<String> cached = resultCache.get(name, argString);
             if (cached.isPresent()) {
-                String text = cached.get();
+                String text = boundedText(cached.get(), maxToolResultChars);
                 content.addObject().put("type", "text").put("text", text);
                 if (includeResponseMetadata) {
                     ObjectNode metadata = result.putObject("_meta");
@@ -247,24 +257,42 @@ public final class McpStdioServer {
                     metadata.put("castcli/cacheEvictions", stats.evictions());
                     metadata.put("castcli/cacheKeySchema", stats.keySchemaVersion());
                 }
+                appendUsage(new McpUsageRecord(startedEpochMs, invocationId, span.traceId(), name, true,
+                        elapsedMillis(startedNanos), null, null, null, 0, 0, 0, null,
+                        argString.length(), text.length(), null, callerModel));
                 return result;
             }
         }
+        if (failureKey != null && suppressDuplicateFailure(failureKey)) {
+            String errorText = "Identical failed delegation suppressed; continue with direct execution "
+                    + "or reduce the request instead of retrying unchanged input.";
+            content.addObject().put("type", "text").put("text", errorText);
+            result.put("isError", true);
+            addFailureMetadata(result, invocationId, "duplicate_suppressed", true);
+            appendUsage(new McpUsageRecord(startedEpochMs, invocationId, span.traceId(), name, false,
+                    elapsedMillis(startedNanos), null, null, null, 0, 0, 0, failureKey,
+                    argString.length(), errorText.length(), "duplicate_suppressed", callerModel));
+            return result;
+        }
         try {
             McpTool.ExecutionResult execution = tool.handler().handle(arguments);
-            String text = execution.text();
+            String originalText = execution.text() == null ? "" : execution.text();
+            String text = boundedText(originalText, maxToolResultChars);
             if (isReadOnly && text != null && !text.isBlank()) {
                 resultCache.put(name, argString, text);
             }
+            if (failureKey != null) recentFailedDelegations.remove(failureKey);
             McpTool.Delegation delegation = execution.delegation();
             if (delegation != null && includeResponseMetadata) {
-                text += delegationReceipt(invocationId, delegation);
+                text = boundedText(text + delegationReceipt(invocationId, delegation), maxToolResultChars);
             }
             content.addObject().put("type", "text").put("text", text);
             if (includeResponseMetadata) {
                 ObjectNode metadata = result.putObject("_meta");
                 metadata.put("castcli/invocationId", invocationId);
                 metadata.put("castcli/usageAuditPath", usageStore.path().toString());
+                metadata.put("castcli/resultTruncated",
+                        execution.truncated() || text.length() < originalText.length());
                 if (isReadOnly) {
                     var stats = resultCache.stats();
                     metadata.put("castcli/cacheEntries", stats.entries());
@@ -278,16 +306,17 @@ public final class McpStdioServer {
             appendUsage(toUsageRecord(startedEpochMs, startedNanos, invocationId, name, text, delegation, span.traceId(), callerModel));
         } catch (Exception e) {
             span.error(e);
-            String errorText = "Tool execution failed: " + e.getMessage();
+            String errorType = classifyError(e);
+            if (failureKey != null) recentFailedDelegations.put(failureKey, System.currentTimeMillis());
+            String errorText = boundedText("Tool execution failed: " + e.getMessage()
+                    + (failureKey == null ? "" : " Continue with direct execution; do not retry unchanged input."),
+                    maxToolResultChars);
             content.addObject().put("type", "text").put("text", errorText);
             result.put("isError", true);
-            if (includeResponseMetadata) {
-                result.putObject("_meta").put("castcli/invocationId", invocationId)
-                        .put("castcli/usageAuditPath", usageStore.path().toString());
-            }
+            addFailureMetadata(result, invocationId, errorType, false);
             appendUsage(new McpUsageRecord(startedEpochMs, invocationId, span.traceId(), name, false,
                     elapsedMillis(startedNanos), null, null, null, 0, 0, 0, null,
-                    arguments.toString().length(), errorText.length(), e.getClass().getName(), callerModel));
+                    arguments.toString().length(), errorText.length(), errorType, callerModel));
         }
         return result;
         }
@@ -330,10 +359,14 @@ public final class McpStdioServer {
                 sqliteMemoryStore, cheapOrchestrator, config.memory().defaultNamespace());
         MemoryTools memoryTools = new MemoryTools(sqliteMemoryStore, config.memory().defaultNamespace(), sessionSummarizer);
 
-        registerAskLocal(cheapOrchestrator, config.routing().maxContextChars());
+        registerAskLocal(cheapOrchestrator, config.routing().maxContextChars(), cheapOnlyConfig);
         registerListModels(cheapOnlyConfig);
         registerStructuredDelegationTools(new ReadOnlyDelegationTools(
-                cheapOrchestrator, workspaceTools, telemetry, config.routing().maxContextChars()));
+                cheapOrchestrator, workspaceTools, telemetry, config.routing().maxContextChars(),
+                TimeUnit.SECONDS.toMillis(Math.min(MAX_MCP_DELEGATION_SECONDS,
+                        config.reliability().requestDeadlineSeconds())),
+                preferredTier(cheapOnlyConfig, ModelTier.SMALL_LOCAL),
+                preferredTier(cheapOnlyConfig, ModelTier.LARGE_LOCAL)));
         registerTool("read_workspace_file", "Reads a UTF-8 text file inside the configured workspace.",
                 schema(Map.of("path", "string")), args ->
                         workspaceTools.readWorkspaceFile(args.path("path").asText()));
@@ -389,11 +422,25 @@ public final class McpStdioServer {
         ToolConfig readOnlyTools = new ToolConfig(
                 config.tools().workspaceRoot(), config.tools().maxFileBytes(), config.tools().jshellEnabled(),
                 false, false, true);
+        ReliabilityConfig reliability = config.reliability();
+        ReliabilityConfig mcpReliability = new ReliabilityConfig(
+                1, reliability.initialBackoffMillis(), reliability.maxBackoffMillis(),
+                reliability.failureThreshold(), reliability.cooldownSeconds(),
+                Math.min(MAX_MCP_DELEGATION_SECONDS, reliability.requestDeadlineSeconds()),
+                reliability.maxConcurrentRequests(), reliability.fallbackOrder(),
+                reliability.maxCostUsdPerTask(), reliability.maxCumulativeCostUsd(),
+                reliability.maxRequestsPerMinute());
         return new HarnessConfig(cheapProviders, config.routing(), readOnlyTools, config.mcpServers(),
-                config.embeddings(), config.memory(), config.reliability(), config.observability(), config.mcpAudit());
+                config.embeddings(), config.memory(), mcpReliability, config.observability(), config.mcpAudit());
     }
 
-    private void registerAskLocal(HarnessOrchestrator cheapOrchestrator, int maxContextChars) {
+    private static ModelTier preferredTier(HarnessConfig config, ModelTier preferred) {
+        return config.providers().stream().anyMatch(provider -> provider.tier() == preferred)
+                ? preferred : config.providers().getFirst().tier();
+    }
+
+    private void registerAskLocal(HarnessOrchestrator cheapOrchestrator, int maxContextChars,
+                                  HarnessConfig cheapOnlyConfig) {
         registerRichTool("ask_local",
                 "Generic bounded delegation to cheap local/small model tiers (never frontier cloud). "
                         + "Prefer the structured delegation tools when one matches the task. "
@@ -407,7 +454,11 @@ public final class McpStdioServer {
                     if (prompt.length() > maxContextChars) throw new IllegalArgumentException(
                             "prompt exceeds configured maximum of " + maxContextChars + " characters");
                     Workload workload = parseWorkload(args.path("workload").asText("AUTO"));
-                    HarnessOrchestrator.Outcome outcome = cheapOrchestrator.run(new TaskRequest(prompt, workload, null));
+                    ModelTier tier = workload == Workload.QUICK
+                            ? preferredTier(cheapOnlyConfig, ModelTier.SMALL_LOCAL)
+                            : preferredTier(cheapOnlyConfig, ModelTier.LARGE_LOCAL);
+                    HarnessOrchestrator.Outcome outcome = cheapOrchestrator.run(
+                            new TaskRequest(prompt, workload, tier, true));
                     return new McpTool.ExecutionResult(outcome.answer(), new McpTool.Delegation(
                             outcome.traceId(), outcome.provider().id(), outcome.provider().tier().name(),
                             outcome.provider().modelName(), outcome.inputTokens(), outcome.outputTokens(),
@@ -475,6 +526,48 @@ public final class McpStdioServer {
 
     private void registerRichTool(String name, String description, ObjectNode inputSchema, McpTool.Handler handler) {
         tools.put(name, new McpTool(name, description, inputSchema, handler));
+    }
+
+    private boolean suppressDuplicateFailure(String key) {
+        long now = System.currentTimeMillis();
+        recentFailedDelegations.entrySet().removeIf(
+                entry -> now - entry.getValue() >= FAILED_REQUEST_TTL_MILLIS);
+        Long failedAt = recentFailedDelegations.get(key);
+        return failedAt != null && now - failedAt < FAILED_REQUEST_TTL_MILLIS;
+    }
+
+    private void addFailureMetadata(ObjectNode result, String invocationId, String errorType,
+                                    boolean retrySuppressed) {
+        ObjectNode metadata = result.withObject("_meta");
+        metadata.put("castcli/invocationId", invocationId);
+        metadata.put("castcli/usageAuditPath", usageStore.path().toString());
+        metadata.put("castcli/errorType", errorType);
+        metadata.put("castcli/fallbackRecommended", true);
+        metadata.put("castcli/retrySuppressed", retrySuppressed);
+    }
+
+    private static String classifyError(Throwable failure) {
+        for (Throwable current = failure; current != null; current = current.getCause()) {
+            String type = current.getClass().getSimpleName().toLowerCase(java.util.Locale.ROOT);
+            String message = current.getMessage() == null ? "" : current.getMessage().toLowerCase(java.util.Locale.ROOT);
+            if (type.contains("timeout") || message.contains("timed out") || message.contains("deadline")) {
+                return "timeout";
+            }
+            if (message.contains("context") || message.contains("prompt budget")
+                    || message.contains("configured maximum") || message.contains("exceeds configured")) {
+                return "context_rejected";
+            }
+        }
+        return failure.getClass().getName();
+    }
+
+    private static String boundedText(String text, int maximum) {
+        if (text == null || text.length() <= maximum) return text == null ? "" : text;
+        String marker = "\n...[MCP result truncated by output budget]...\n";
+        int head = Math.max(0, (maximum - marker.length()) / 2);
+        int tail = Math.max(0, maximum - marker.length() - head);
+        if (head + tail == 0) return text.substring(0, maximum);
+        return text.substring(0, head) + marker + text.substring(text.length() - tail);
     }
 
     private void appendUsage(McpUsageRecord record) {
@@ -568,6 +661,14 @@ public final class McpStdioServer {
             case "summarize_files", "analyze_failure", "review_diff",
                     "map_change_impact", "generate_tests", "search_workspace",
                     "read_workspace_file", "list_workspace_files" -> true;
+            default -> false;
+        };
+    }
+
+    private static boolean isDelegationTool(String toolName) {
+        return switch (toolName) {
+            case "ask_local", "summarize_files", "analyze_failure", "draft_patch",
+                    "generate_tests", "review_diff", "map_change_impact" -> true;
             default -> false;
         };
     }

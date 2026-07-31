@@ -31,8 +31,17 @@ populated in two ways (in priority order):
     ./gradlew.bat run --args="--config config/harness.local.json mcp-usage --since-hours 24 --fail-if-unused"
 
 The report shows total MCP calls, delegation attempts and successes, `ask_local` calls, local input/output
-tokens, latency, estimated local cost, calls by tool/provider, and an estimated frontier-equivalent cost when the config has
-an enabled FRONTIER_CLOUD reference provider.
+tokens, estimated local cost, calls by tool/provider, and an estimated frontier-equivalent cost when the config has
+an enabled FRONTIER_CLOUD reference provider. Per-tool performance includes p50/p95 latency plus timeout,
+context-rejection, and direct-fallback counts.
+
+Structured delegations reserve 30% of `routing.maxContextChars` for model output and protocol overhead before
+retrieving workspace content. File reads stop at the partition budget; common generated roots (`build`,
+`.gradle`, `out`, `target`, and `node_modules`) are skipped. Search lines are capped, inputs are packed into at most four bounded partitions,
+and multi-part summaries use one bounded reduction pass. Results are capped at 4,000 characters. Each MCP
+delegation has a total deadline of at most 60 seconds and one local-provider attempt; a failure returns
+`castcli/fallbackRecommended=true`. Identical failed requests are suppressed for five minutes and return
+`castcli/retrySuppressed=true`, telling the caller to continue directly instead of repeating slow work.
 
 For automation:
 

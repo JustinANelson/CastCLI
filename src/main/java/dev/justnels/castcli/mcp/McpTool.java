@@ -10,9 +10,13 @@ public record McpTool(String name, String description, ObjectNode inputSchema, H
         ExecutionResult handle(JsonNode arguments) throws Exception;
     }
 
-    public record ExecutionResult(String text, Delegation delegation) {
+    public record ExecutionResult(String text, Delegation delegation, boolean truncated) {
+        public ExecutionResult(String text, Delegation delegation) {
+            this(text, delegation, false);
+        }
+
         public static ExecutionResult text(String text) {
-            return new ExecutionResult(text, null);
+            return new ExecutionResult(text, null, false);
         }
     }
 

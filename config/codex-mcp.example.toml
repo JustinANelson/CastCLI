@@ -6,7 +6,7 @@ required = true
 command = "C:\absolute\path\to\CastCLI\build\install\cast-cli\bin\cast-cli.bat"
 args = ["--config", "C:\absolute\path\to\CastCLI\config\harness.local.json", "mcp-serve"]
 startup_timeout_sec = 20.0
-tool_timeout_sec = 300.0
+tool_timeout_sec = 75.0
 enabled_tools = [
   "ask_local",
   "list_models",

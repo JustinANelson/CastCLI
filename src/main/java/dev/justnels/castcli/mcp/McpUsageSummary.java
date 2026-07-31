@@ -25,12 +25,16 @@ public record McpUsageSummary(
         double estimatedCostAvoidedUsd,
         long averageDelegationDurationMs,
         Map<String, Integer> callsByTool,
+        Map<String, ToolPerformance> performanceByTool,
         Map<String, ProviderUsage> usageByProvider,
         List<String> callerModels) {
 
     public record ProviderUsage(int calls, long inputTokens, long outputTokens, double estimatedCostUsd) {
         public long totalTokens() { return inputTokens + outputTokens; }
     }
+
+    public record ToolPerformance(int calls, int successes, int timeouts, int contextRejections,
+                                  int fallbacks, long p50DurationMs, long p95DurationMs) { }
 
     public static McpUsageSummary summarize(List<McpUsageRecord> records, HarnessConfig config) {
         int successful = 0;
@@ -43,6 +47,7 @@ public record McpUsageSummary(
         double localCost = 0;
         double frontierEquivalentCost = 0;
         Map<String, Integer> tools = new TreeMap<>();
+        Map<String, MutableToolPerformance> toolPerformance = new TreeMap<>();
         Map<String, MutableProviderUsage> providers = new TreeMap<>();
         Map<String, ProviderConfig> providerConfigs = new LinkedHashMap<>();
         config.providers().forEach(provider -> providerConfigs.put(provider.id(), provider));
@@ -51,6 +56,8 @@ public record McpUsageSummary(
 
         for (McpUsageRecord record : records) {
             tools.merge(record.toolName(), 1, Integer::sum);
+            toolPerformance.computeIfAbsent(record.toolName(), ignored -> new MutableToolPerformance())
+                    .add(record);
             if (record.success()) successful++;
             if ("ask_local".equals(record.toolName())) askCalls++;
             if (record.delegationAttempted()) delegationCalls++;
@@ -72,10 +79,12 @@ public record McpUsageSummary(
 
         Map<String, ProviderUsage> immutableProviders = new LinkedHashMap<>();
         providers.forEach((id, usage) -> immutableProviders.put(id, usage.freeze()));
+        Map<String, ToolPerformance> immutableToolPerformance = new LinkedHashMap<>();
+        toolPerformance.forEach((name, usage) -> immutableToolPerformance.put(name, usage.freeze()));
         return new McpUsageSummary(records.size(), successful, askCalls, delegationCalls, delegations, input, output, localCost,
                 frontierEquivalentCost, Math.max(0, frontierEquivalentCost - localCost),
-                delegations == 0 ? 0 : duration / delegations, Map.copyOf(tools), Map.copyOf(immutableProviders),
-                List.copyOf(callerModelsSeen));
+                delegations == 0 ? 0 : duration / delegations, Map.copyOf(tools),
+                Map.copyOf(immutableToolPerformance), Map.copyOf(immutableProviders), List.copyOf(callerModelsSeen));
     }
 
     public long localTotalTokens() {
@@ -99,6 +108,36 @@ public record McpUsageSummary(
         }
         ProviderUsage freeze() {
             return new ProviderUsage(calls, input, output, cost);
+        }
+    }
+
+    private static final class MutableToolPerformance {
+        int calls;
+        int successes;
+        int timeouts;
+        int contextRejections;
+        int fallbacks;
+        final java.util.ArrayList<Long> durations = new java.util.ArrayList<>();
+
+        void add(McpUsageRecord record) {
+            calls++;
+            if (record.success()) successes++;
+            if ("timeout".equals(record.errorType())) timeouts++;
+            if ("context_rejected".equals(record.errorType())) contextRejections++;
+            if (record.delegationAttempted() && !record.success()) fallbacks++;
+            durations.add(record.durationMs());
+        }
+
+        ToolPerformance freeze() {
+            durations.sort(Long::compareTo);
+            return new ToolPerformance(calls, successes, timeouts, contextRejections, fallbacks,
+                    percentile(0.50), percentile(0.95));
+        }
+
+        private long percentile(double percentile) {
+            if (durations.isEmpty()) return 0;
+            int index = Math.max(0, (int) Math.ceil(percentile * durations.size()) - 1);
+            return durations.get(index);
         }
     }
 }
