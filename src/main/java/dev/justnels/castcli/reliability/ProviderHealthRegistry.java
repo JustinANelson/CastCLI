@@ -2,6 +2,7 @@ package dev.justnels.castcli.reliability;
 
 import dev.justnels.castcli.config.ProviderConfig;
 import dev.justnels.castcli.config.ReliabilityConfig;
+import dev.justnels.castcli.persistence.AtomicFileWriter;
 
 import java.time.Clock;
 import java.util.Map;
@@ -50,16 +51,32 @@ public final class ProviderHealthRegistry {
         if (path.getParent() != null) {
             java.nio.file.Files.createDirectories(path.getParent());
         }
-        mapper.writeValue(path.toFile(), states);
+        AtomicFileWriter.write(path, mapper.writeValueAsBytes(states));
     }
 
     public synchronized void loadState(java.nio.file.Path path) throws java.io.IOException {
-        if (!java.nio.file.Files.exists(path)) return;
+        java.nio.file.Path source = path;
+        if (!java.nio.file.Files.isRegularFile(source)) {
+            source = AtomicFileWriter.backupPath(path);
+            if (!java.nio.file.Files.isRegularFile(source)) return;
+        }
         com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
-        Map<String, State> loaded = mapper.readValue(path.toFile(),
-                mapper.getTypeFactory().constructMapType(Map.class, String.class, State.class));
+        Map<String, State> loaded;
+        try {
+            loaded = readState(mapper, source);
+        } catch (java.io.IOException primaryFailure) {
+            java.nio.file.Path backup = AtomicFileWriter.backupPath(path);
+            if (!source.equals(path) || !java.nio.file.Files.isRegularFile(backup)) throw primaryFailure;
+            loaded = readState(mapper, backup);
+        }
         states.clear();
         states.putAll(loaded);
+    }
+
+    private static Map<String, State> readState(com.fasterxml.jackson.databind.ObjectMapper mapper,
+                                                 java.nio.file.Path path) throws java.io.IOException {
+        return mapper.readValue(path.toFile(),
+                mapper.getTypeFactory().constructMapType(Map.class, String.class, State.class));
     }
 
     private State state(String id) { return states.computeIfAbsent(id, ignored -> new State()); }

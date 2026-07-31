@@ -26,6 +26,11 @@ java -version
 
 # Generate coverage (HTML report: build/reports/jacoco/test/html/index.html)
 ./gradlew.bat jacocoTestReport
+
+# Opt-in deterministic performance and resilience lanes
+./gradlew.bat performanceTest
+./gradlew.bat chaosTest
+
 ```
 
 Gradle uses a Java 21 toolchain and can download a matching JDK through the Foojay resolver when needed.
@@ -76,6 +81,13 @@ Model names are examples, not hard requirements. Any server with an OpenAI-compa
 # Run as an MCP server over stdio, exposing only SMALL_LOCAL/LARGE_LOCAL tiers as tools
 # (point an MCP-capable client such as Claude Code at this as a stdio server)
 ./gradlew.bat run --args="mcp-serve"
+
+# Run the bounded OpenAI-compatible gateway; limits have conservative defaults and are independently tunable
+./gradlew.bat run --args='gateway --port 8081 --max-request-bytes 1048576 --max-concurrent-requests 16'
+./gradlew.bat run --args='gateway --max-concurrent-streams 8 --queue-wait-ms 2000 --max-messages 256'
+
+# Additional structural limits: --max-tools, --max-json-depth, and --max-string-chars
+
 
 # Verify MCP utilization and local token/cost efficiency
 ./gradlew.bat run --args="mcp-usage --since-hours 24 --fail-if-unused"

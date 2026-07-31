@@ -15,6 +15,7 @@ import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.model.chat.request.ToolChoice;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -66,6 +67,13 @@ class GatewayHttpServerTest {
 
     private void startServer(String bindAddress, String token, HarnessOrchestrator orchestrator) throws IOException {
         server = new GatewayHttpServer(bindAddress, 0, config(), token, orchestrator);
+        server.start();
+        httpClient = HttpClient.newHttpClient();
+    }
+
+    private void startServer(String bindAddress, String token, HarnessOrchestrator orchestrator,
+                             GatewayLimits limits) throws IOException {
+        server = new GatewayHttpServer(bindAddress, 0, config(), token, orchestrator, limits);
         server.start();
         httpClient = HttpClient.newHttpClient();
     }
@@ -324,6 +332,65 @@ class GatewayHttpServerTest {
     }
 
     @Test
+    void rejectsOversizedRequestBeforeModelExecution() throws Exception {
+        tearDown();
+        HarnessConfig config = config();
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        HarnessOrchestrator.Outcome outcome = new HarnessOrchestrator.Outcome(
+                config.providers().getFirst(), "unused", List.of(), List.of(), 1L, false, 0L, 0L, 0.0);
+        GatewayLimits limits = new GatewayLimits(32, 2, 1, 0, 10, 10, 10, 32);
+        startServer("127.0.0.1", null, new StubOrchestrator(config, outcome) {
+            @Override public Outcome run(TaskRequest task, List<ChatMessage> history) {
+                calls.incrementAndGet();
+                return outcome;
+            }
+        }, limits);
+
+        HttpResponse<String> response = post("{\"messages\":[{\"role\":\"user\",\"content\":\"payload-too-large\"}]}");
+
+        assertThat(response.statusCode()).isEqualTo(413);
+        assertThat(calls).hasValue(0);
+        assertThat(server.metrics().oversized()).isEqualTo(1);
+    }
+
+    @Test
+    void rejectsConcurrentRequestWhenAdmissionIsFull() throws Exception {
+        tearDown();
+        HarnessConfig config = config();
+        var started = new java.util.concurrent.CountDownLatch(1);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        HarnessOrchestrator.Outcome outcome = new HarnessOrchestrator.Outcome(
+                config.providers().getFirst(), "ok", List.of(), List.of(), 1L, false, 1L, 1L, 0.0);
+        GatewayLimits limits = new GatewayLimits(4096, 1, 1, 0, 10, 10, 20, 1024);
+        startServer("127.0.0.1", null, new StubOrchestrator(config, outcome) {
+            @Override public Outcome run(TaskRequest task, List<ChatMessage> history) {
+                started.countDown();
+                try {
+                    release.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                return outcome;
+            }
+        }, limits);
+
+        HttpRequest firstRequest = HttpRequest.newBuilder()
+                .uri(URI.create("http://localhost:" + server.getPort() + "/v1/chat/completions"))
+                .POST(HttpRequest.BodyPublishers.ofString("{\"messages\":[{\"role\":\"user\",\"content\":\"first\"}]}"))
+                .build();
+        var first = httpClient.sendAsync(firstRequest, HttpResponse.BodyHandlers.ofString());
+        assertThat(started.await(2, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+
+        HttpResponse<String> overloaded = post("{\"messages\":[{\"role\":\"user\",\"content\":\"second\"}]}");
+        release.countDown();
+
+        assertThat(overloaded.statusCode()).isEqualTo(503);
+        assertThat(overloaded.headers().firstValue("Retry-After")).contains("1");
+        assertThat(first.get(2, java.util.concurrent.TimeUnit.SECONDS).statusCode()).isEqualTo(200);
+        assertThat(server.metrics().rejected()).isEqualTo(1);
+    }
+
+    @Test
     void getMethodNotAllowedOnChatCompletions() throws Exception {
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create("http://localhost:" + server.getPort() + "/v1/chat/completions"))
@@ -472,5 +539,57 @@ class GatewayHttpServerTest {
                  "tools":[{"type":"unsupported_type"}]}
                 """);
         assertThat(response.statusCode()).isEqualTo(400);
+    }
+
+    @Test
+    @Tag("performance")
+    void gatewayLoadProbeReportsTailLatencyAndThroughput() {
+        int requests = Integer.getInteger("castcli.performance.requests", 64);
+        List<java.util.concurrent.CompletableFuture<Long>> futures = new java.util.ArrayList<>();
+        long batchStarted = System.nanoTime();
+        for (int i = 0; i < requests; i++) {
+            long started = System.nanoTime();
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create("http://localhost:" + server.getPort() + "/v1/chat/completions"))
+                    .POST(HttpRequest.BodyPublishers.ofString("{\"messages\":[{\"role\":\"user\",\"content\":\"load\"}]}"))
+                    .build();
+            futures.add(httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString())
+                    .thenApply(response -> (System.nanoTime() - started) / 1_000_000));
+        }
+        java.util.concurrent.CompletableFuture.allOf(
+                futures.toArray(java.util.concurrent.CompletableFuture[]::new)).join();
+
+        List<Long> durations = futures.stream().map(java.util.concurrent.CompletableFuture::join)
+                .sorted().toList();
+        long p95 = durations.get(Math.max(0, (int) Math.ceil(durations.size() * 0.95) - 1));
+        long threshold = Long.getLong("castcli.performance.gatewayP95Ms", 10_000L);
+        double throughput = requests / ((System.nanoTime() - batchStarted) / 1_000_000_000.0);
+
+        assertThat(durations).hasSize(requests).allMatch(duration -> duration >= 0);
+        assertThat(p95).isLessThan(threshold);
+        System.out.printf("gateway-load requests=%d p50=%dms p95=%dms throughput=%.2f/s%n",
+                requests, durations.get(durations.size() / 2), p95, throughput);
+    }
+
+    @Test
+    @Tag("chaos")
+    void rejectsOversizedChunkedBodyWithoutContentLength() throws Exception {
+        tearDown();
+        HarnessConfig config = config();
+        HarnessOrchestrator.Outcome outcome = new HarnessOrchestrator.Outcome(
+                config.providers().getFirst(), "unused", List.of(), List.of(), 1L, false, 0L, 0L, 0.0);
+        GatewayLimits limits = new GatewayLimits(32, 2, 1, 0, 10, 10, 10, 32);
+        startServer("127.0.0.1", null, new StubOrchestrator(config, outcome), limits);
+
+        byte[] payload = "{\"messages\":[{\"role\":\"user\",\"content\":\"chunked-payload-too-large\"}]}"
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create("http://localhost:" + server.getPort() + "/v1/chat/completions"))
+                .POST(HttpRequest.BodyPublishers.ofInputStream(() -> new java.io.ByteArrayInputStream(payload)))
+                .build();
+        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+        assertThat(response.statusCode()).isEqualTo(413);
+        assertThat(server.metrics().oversized()).isEqualTo(1);
     }
 }

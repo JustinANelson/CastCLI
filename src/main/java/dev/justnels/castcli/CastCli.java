@@ -963,10 +963,45 @@ public final class CastCli implements Runnable {
                         + "Required when --bind is not loopback; optional (but recommended) on loopback.")
         private String token;
 
+        @Option(names = "--max-request-bytes", description = "Maximum JSON request size in bytes.")
+        private Long maxRequestBytes;
+
+        @Option(names = "--max-concurrent-requests", description = "Maximum admitted HTTP requests.")
+        private Integer maxConcurrentRequests;
+
+        @Option(names = "--max-concurrent-streams", description = "Maximum simultaneous streaming responses.")
+        private Integer maxConcurrentStreams;
+
+        @Option(names = "--queue-wait-ms", description = "Maximum admission queue wait in milliseconds.")
+        private Long queueWaitMillis;
+
+        @Option(names = "--max-messages", description = "Maximum messages in one request.")
+        private Integer maxMessages;
+
+        @Option(names = "--max-tools", description = "Maximum tool definitions in one request.")
+        private Integer maxTools;
+
+        @Option(names = "--max-json-depth", description = "Maximum nested JSON depth.")
+        private Integer maxJsonDepth;
+
+        @Option(names = "--max-string-chars", description = "Maximum characters in one JSON string.")
+        private Integer maxStringChars;
+
+
         @Override public Integer call() throws Exception {
             HarnessConfig config = parent.loadConfig();
+            var defaults = dev.justnels.castcli.gateway.GatewayLimits.defaults(config);
+            var limits = new dev.justnels.castcli.gateway.GatewayLimits(
+                    maxRequestBytes == null ? defaults.maxRequestBytes() : maxRequestBytes,
+                    maxConcurrentRequests == null ? defaults.maxConcurrentRequests() : maxConcurrentRequests,
+                    maxConcurrentStreams == null ? defaults.maxConcurrentStreams() : maxConcurrentStreams,
+                    queueWaitMillis == null ? defaults.queueWaitMillis() : queueWaitMillis,
+                    maxMessages == null ? defaults.maxMessages() : maxMessages,
+                    maxTools == null ? defaults.maxTools() : maxTools,
+                    maxJsonDepth == null ? defaults.maxJsonDepth() : maxJsonDepth,
+                    maxStringChars == null ? defaults.maxStringChars() : maxStringChars);
             try (dev.justnels.castcli.gateway.GatewayHttpServer server =
-                         new dev.justnels.castcli.gateway.GatewayHttpServer(bindAddress, port, config, token)) {
+                         new dev.justnels.castcli.gateway.GatewayHttpServer(bindAddress, port, config, token, limits)) {
                 server.start();
                 dev.justnels.castcli.lifecycle.ShutdownHookManager.getInstance().register(server);
                 System.out.println("CastCLI OpenAI-compatible gateway started on " + server.getAddress()

@@ -42,4 +42,24 @@ class ProviderHealthRegistryTest {
         assertFalse(registry2.isAvailable(provider), "Loaded registry should reflect open circuit");
         assertEquals(3, registry2.consecutiveFailures(provider), "Consecutive failure count should match");
     }
+
+    @Test
+    void loadsBackupWhenPrimaryStateIsCorrupt(@TempDir Path tempDir) throws IOException {
+        ReliabilityConfig config = new ReliabilityConfig(3, 60, 3000, 3, 60, 300, 16, Map.of());
+        ProviderHealthRegistry registry = new ProviderHealthRegistry(config);
+        ProviderConfig provider = new ProviderConfig("test-provider", ModelTier.SMALL_LOCAL,
+                "http://localhost:11434/v1/", "qwen3.5:9b", null, 0.1, 120, true, true, 4, 0.0, 0.0);
+
+        Path stateFile = tempDir.resolve("health-state.json");
+        registry.recordFailure(provider, FailureKind.TIMEOUT);
+        registry.saveState(stateFile);
+        registry.recordFailure(provider, FailureKind.TIMEOUT);
+        registry.saveState(stateFile);
+        java.nio.file.Files.writeString(stateFile, "not-json");
+
+        ProviderHealthRegistry recovered = new ProviderHealthRegistry(config);
+        recovered.loadState(stateFile);
+
+        assertEquals(1, recovered.consecutiveFailures(provider));
+    }
 }

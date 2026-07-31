@@ -2,6 +2,7 @@ package dev.justnels.castcli.agent;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
+import dev.justnels.castcli.persistence.AtomicFileWriter;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -25,15 +26,23 @@ public final class CheckpointStore {
     public Path save(Checkpoint checkpoint) throws IOException {
         Files.createDirectories(checkpointDir);
         Path path = pathFor(checkpoint.goal());
-        mapper.writeValue(path.toFile(), checkpoint);
+        AtomicFileWriter.write(path, mapper.writeValueAsBytes(checkpoint));
         return path;
     }
 
     public Optional<Checkpoint> load(Path path) throws IOException {
         if (!Files.isRegularFile(path)) {
-            return Optional.empty();
+            Path backup = AtomicFileWriter.backupPath(path);
+            if (!Files.isRegularFile(backup)) return Optional.empty();
+            return Optional.of(mapper.readValue(backup.toFile(), Checkpoint.class));
         }
-        return Optional.of(mapper.readValue(path.toFile(), Checkpoint.class));
+        try {
+            return Optional.of(mapper.readValue(path.toFile(), Checkpoint.class));
+        } catch (IOException primaryFailure) {
+            Path backup = AtomicFileWriter.backupPath(path);
+            if (!Files.isRegularFile(backup)) throw primaryFailure;
+            return Optional.of(mapper.readValue(backup.toFile(), Checkpoint.class));
+        }
     }
 
     private static String fingerprint(String goal) {

@@ -23,6 +23,11 @@ Routing is deliberately separate from provider construction, making policy easy 
 
 All endpoints currently use the broadly supported OpenAI-compatible protocol. Add a provider-specific LangChain4j module and branch in `ChatModelFactory` when a native integration provides capabilities you need.
 
+The inbound gateway applies admission control before authentication/dispatch and independently bounds request
+bytes, JSON depth/string size, message/tool counts, total in-flight requests, and streaming responses. Overload
+returns `503` with `Retry-After`; its public metrics snapshot exposes accepted, rejected, oversized, queued, active,
+and byte totals. Both HTTP servers own and drain their virtual-thread executors during shutdown.
+
 ## Tool strategy
 
 Tool-capable providers receive Java tool groups selected by `DefaultToolSelector` from the prompt/workload:
@@ -149,9 +154,10 @@ alone after the wave they depend on completes. A `REVIEWER` subtask that ends it
 reviewed, with the rejection feedback appended to the reworked prompts, followed by a re-review. Context
 handed to later workers is capped at `routing.maxContextChars`: the most recent subtask outputs are kept
 in full, older ones collapse to a one-line summary, so the prompt sent to a small local model cannot grow
-without bound across a long plan. Progress is checkpointed to `.cast/checkpoints/<goal-hash>.json`
+without bound across a long plan. Progress is checkpointed atomically to `.cast/checkpoints/<goal-hash>.json`
 after every wave; `AgentTeam.commission(goal, checkpointPath)` resumes from there, skipping already
-completed subtasks.
+completed subtasks. Checkpoint and provider-health JSON writes are flushed to same-directory temporary files,
+retain a `.bak` previous version, and recover from that backup when the primary cannot be decoded.
 
 ## Acting as an MCP server
 
@@ -161,6 +167,10 @@ JSON-RPC 2.0), negotiates supported older revisions during initialization, and e
 provider filtered out, so it can never proxy a call to a frontier model — the point is to give a frontier
 agent (e.g. Claude Code, wired up as an MCP client) a place to offload routine, low-stakes subtasks onto
 this harness's cheap local/small tiers. Run it with `cast-cli mcp-serve`.
+
+Deterministic read-only delegation results use a versioned-key LRU bounded by both entry count and UTF-8 bytes.
+MCP response metadata reports cache entries, bytes, hits/misses, evictions, and key-schema version so operators
+can validate that caching saves work without allowing unbounded growth.
 
 ## Extension points
 

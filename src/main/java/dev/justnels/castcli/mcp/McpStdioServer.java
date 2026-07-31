@@ -240,6 +240,12 @@ public final class McpStdioServer {
                     ObjectNode metadata = result.putObject("_meta");
                     metadata.put("castcli/invocationId", invocationId);
                     metadata.put("castcli/cached", true);
+                    var stats = resultCache.stats();
+                    metadata.put("castcli/cacheEntries", stats.entries());
+                    metadata.put("castcli/cacheBytes", stats.bytes());
+                    metadata.put("castcli/cacheHits", stats.hits());
+                    metadata.put("castcli/cacheEvictions", stats.evictions());
+                    metadata.put("castcli/cacheKeySchema", stats.keySchemaVersion());
                 }
                 return result;
             }
@@ -259,6 +265,14 @@ public final class McpStdioServer {
                 ObjectNode metadata = result.putObject("_meta");
                 metadata.put("castcli/invocationId", invocationId);
                 metadata.put("castcli/usageAuditPath", usageStore.path().toString());
+                if (isReadOnly) {
+                    var stats = resultCache.stats();
+                    metadata.put("castcli/cacheEntries", stats.entries());
+                    metadata.put("castcli/cacheBytes", stats.bytes());
+                    metadata.put("castcli/cacheMisses", stats.misses());
+                    metadata.put("castcli/cacheEvictions", stats.evictions());
+                    metadata.put("castcli/cacheKeySchema", stats.keySchemaVersion());
+                }
                 if (delegation != null) addDelegationMetadata(metadata, delegation);
             }
             appendUsage(toUsageRecord(startedEpochMs, startedNanos, invocationId, name, text, delegation, span.traceId(), callerModel));

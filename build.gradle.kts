@@ -79,8 +79,31 @@ tasks.named<ProcessResources>("processResources") {
 }
 
 tasks.test {
-    useJUnitPlatform()
+    useJUnitPlatform {
+        excludeTags("performance", "chaos")
+    }
+    maxParallelForks = (Runtime.getRuntime().availableProcessors() / 2).coerceIn(1, 4)
     finalizedBy(tasks.jacocoTestReport)
+}
+
+tasks.register<Test>("performanceTest") {
+    group = "verification"
+    description = "Runs opt-in deterministic performance and load regression probes."
+    testClassesDirs = sourceSets["test"].output.classesDirs
+    classpath = sourceSets["test"].runtimeClasspath
+    useJUnitPlatform { includeTags("performance") }
+    maxParallelForks = 1
+    shouldRunAfter(tasks.test)
+}
+
+tasks.register<Test>("chaosTest") {
+    group = "verification"
+    description = "Runs opt-in deterministic fault and resilience scenarios."
+    testClassesDirs = sourceSets["test"].output.classesDirs
+    classpath = sourceSets["test"].runtimeClasspath
+    useJUnitPlatform { includeTags("chaos") }
+    maxParallelForks = 1
+    shouldRunAfter(tasks.test)
 }
 
 tasks.jacocoTestReport {

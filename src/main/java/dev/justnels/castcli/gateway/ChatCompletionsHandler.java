@@ -17,11 +17,13 @@ import dev.langchain4j.agent.tool.ToolSpecification;
 import dev.langchain4j.data.message.ChatMessage;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -41,10 +43,17 @@ final class ChatCompletionsHandler implements HttpHandler {
 
     private final HarnessOrchestrator orchestrator;
     private final ObjectMapper mapper;
+    private final GatewayLimits limits;
+    private final GatewayMetrics metrics;
+    private final Semaphore streamPermits;
 
-    ChatCompletionsHandler(HarnessOrchestrator orchestrator, ObjectMapper mapper) {
+    ChatCompletionsHandler(HarnessOrchestrator orchestrator, ObjectMapper mapper,
+                           GatewayLimits limits, GatewayMetrics metrics) {
         this.orchestrator = orchestrator;
         this.mapper = mapper;
+        this.limits = limits;
+        this.metrics = metrics;
+        this.streamPermits = new Semaphore(limits.maxConcurrentStreams(), true);
     }
 
     @Override
@@ -56,11 +65,23 @@ final class ChatCompletionsHandler implements HttpHandler {
 
         JsonNode request;
         try {
-            request = mapper.readTree(exchange.getRequestBody());
+            request = readRequest(exchange);
+        } catch (RequestTooLargeException e) {
+            metrics.oversized();
+            GatewayErrors.send(exchange, mapper, 413, "invalid_request_error", e.getMessage());
+            return;
         } catch (IOException e) {
+            RequestTooLargeException tooLarge = findTooLarge(e);
+            if (tooLarge != null) {
+                metrics.oversized();
+                GatewayErrors.send(exchange, mapper, 413, "invalid_request_error", tooLarge.getMessage());
+                return;
+            }
             GatewayErrors.send(exchange, mapper, 400, "invalid_request_error", "Request body is not valid JSON.");
             return;
         }
+
+        if (!withinCollectionLimits(request, exchange)) return;
 
         if (hasContent(request.path("tools"))) {
             if (request.path("stream").asBoolean(false)) {
@@ -94,6 +115,54 @@ final class ChatCompletionsHandler implements HttpHandler {
         } else {
             handleNonStreaming(exchange, prompt, history);
         }
+    }
+
+    private JsonNode readRequest(HttpExchange exchange) throws IOException {
+        long declaredLength = declaredContentLength(exchange);
+        if (declaredLength > limits.maxRequestBytes()) {
+            throw new RequestTooLargeException(limits.maxRequestBytes());
+        }
+        BoundedInputStream body = new BoundedInputStream(exchange.getRequestBody(), limits.maxRequestBytes());
+        try (body) {
+            return mapper.readTree(body);
+        } finally {
+            metrics.addRequestBytes(body.bytesRead());
+        }
+    }
+
+    private static long declaredContentLength(HttpExchange exchange) {
+        String value = exchange.getRequestHeaders().getFirst("Content-Length");
+        if (value == null) return -1;
+        try {
+            return Long.parseLong(value);
+        } catch (NumberFormatException ignored) {
+            return -1;
+        }
+    }
+
+    private static RequestTooLargeException findTooLarge(Throwable failure) {
+        Throwable current = failure;
+        while (current != null) {
+            if (current instanceof RequestTooLargeException tooLarge) return tooLarge;
+            current = current.getCause();
+        }
+        return null;
+    }
+
+    private boolean withinCollectionLimits(JsonNode request, HttpExchange exchange) throws IOException {
+        if (!withinArrayLimit(request.path("messages"), limits.maxMessages())) {
+            GatewayErrors.send(exchange, mapper, 400, "invalid_request_error", "Too many messages.");
+            return false;
+        }
+        if (!withinArrayLimit(request.path("tools"), limits.maxTools())) {
+            GatewayErrors.send(exchange, mapper, 400, "invalid_request_error", "Too many tools.");
+            return false;
+        }
+        return true;
+    }
+
+    private static boolean withinArrayLimit(JsonNode node, int maximum) {
+        return !node.isArray() || node.size() <= maximum;
     }
 
     private void handleNonStreaming(HttpExchange exchange, String prompt, List<ChatMessage> history) throws IOException {
@@ -198,6 +267,26 @@ final class ChatCompletionsHandler implements HttpHandler {
         }
     }
 
+    private void handleStreaming(HttpExchange exchange, JsonNode request, String prompt,
+                                 List<ChatMessage> history) throws IOException {
+        if (!streamPermits.tryAcquire()) {
+            rejectStream(exchange);
+            return;
+        }
+        try {
+            streamResponse(exchange, request, prompt, history);
+        } finally {
+            streamPermits.release();
+        }
+    }
+
+    private void rejectStream(HttpExchange exchange) throws IOException {
+        metrics.rejected();
+        exchange.getResponseHeaders().set("Retry-After", "1");
+        GatewayErrors.send(exchange, mapper, 503, "server_overloaded",
+                "Gateway streaming concurrency limit reached; retry later.");
+    }
+
     /**
      * Streams the response as OpenAI {@code chat.completion.chunk} SSE events. Response headers are
      * committed lazily, on the first byte we actually have to send: if the orchestrator fails before
@@ -205,7 +294,7 @@ final class ChatCompletionsHandler implements HttpHandler {
      * committed, a later failure can only be surfaced as a terminal SSE event, not an HTTP status
      * change -- that is an inherent constraint of streaming, not something a bigger try/catch fixes.
      */
-    private void handleStreaming(HttpExchange exchange, JsonNode request, String prompt, List<ChatMessage> history)
+    private void streamResponse(HttpExchange exchange, JsonNode request, String prompt, List<ChatMessage> history)
             throws IOException {
         String id = "chatcmpl-" + UUID.randomUUID();
         String requestedModel = request.path("model").asText("castcli");
@@ -360,6 +449,14 @@ final class ChatCompletionsHandler implements HttpHandler {
     private record ErrorMapping(int status, String type, String message) {
     }
 
+    private static final class RequestTooLargeException extends IOException {
+        private static final long serialVersionUID = 1L;
+
+        RequestTooLargeException(long maximum) {
+            super("Request body exceeds the " + maximum + " byte limit.");
+        }
+    }
+
     private static ErrorMapping mapException(RuntimeException e) {
         if (e instanceof BudgetExceededException) {
             return new ErrorMapping(429, "budget_exceeded", e.getMessage());
@@ -374,6 +471,46 @@ final class ChatCompletionsHandler implements HttpHandler {
             return new ErrorMapping(503, "no_provider_available", e.getMessage());
         }
         return new ErrorMapping(500, "internal_error", "The gateway failed to complete this request.");
+    }
+
+    private static final class BoundedInputStream extends InputStream {
+        private final InputStream delegate;
+        private final long maximum;
+        private long bytesRead;
+
+        BoundedInputStream(InputStream delegate, long maximum) {
+            this.delegate = delegate;
+            this.maximum = maximum;
+        }
+
+        long bytesRead() {
+            return bytesRead;
+        }
+
+        @Override
+        public int read() throws IOException {
+            int value = delegate.read();
+            if (value >= 0 && ++bytesRead > maximum) {
+                throw new RequestTooLargeException(maximum);
+            }
+            return value;
+        }
+
+        @Override
+        public int read(byte[] buffer, int offset, int length) throws IOException {
+            long remainingWithProbe = Math.max(1, maximum - bytesRead + 1);
+            int allowed = (int) Math.min(length, remainingWithProbe);
+            int count = delegate.read(buffer, offset, allowed);
+            if (count > 0 && (bytesRead += count) > maximum) {
+                throw new RequestTooLargeException(maximum);
+            }
+            return count;
+        }
+
+        @Override
+        public void close() throws IOException {
+            delegate.close();
+        }
     }
 
     private static boolean hasContent(JsonNode node) {

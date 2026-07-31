@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [ main, master ]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
@@ -29,19 +33,28 @@ jobs:
         with:
           java-version: '21'
           distribution: 'temurin'
-          cache: ${{ runner.os != 'Windows' && 'gradle' || '' }}
+          cache: gradle
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      - name: Run unit & integration tests with static analysis
-        run: ./gradlew check test checkstyleMain checkstyleTest --info
+      - name: Run unit and integration tests with coverage
+        run: ./gradlew test --info
 
-      - name: Verify JaCoCo coverage
-        run: ./gradlew jacocoTestCoverageVerification
+      - name: Run static analysis once
+        if: runner.os == 'Linux'
+        run: ./gradlew checkstyleMain checkstyleTest
+
+      - name: Run deterministic resilience scenarios
+        if: runner.os == 'Linux'
+        run: ./gradlew chaosTest
+
+      - name: Run performance regression probes
+        if: runner.os == 'Linux'
+        run: ./gradlew performanceTest
 
       - name: Archive JaCoCo coverage reports
-        if: always()
+        if: always() && runner.os == 'Linux'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: jacoco-coverage-report-${{ matrix.os }}

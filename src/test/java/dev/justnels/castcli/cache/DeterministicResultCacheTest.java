@@ -35,4 +35,32 @@ class DeterministicResultCacheTest {
         assertThat(cache.get("t1", "i1")).isEmpty();
         assertThat(cache.get("t3", "i3")).isPresent();
     }
+
+    @Test
+    void evictsByUtf8ByteBudget() {
+        DeterministicResultCache cache = new DeterministicResultCache(10, 70);
+        cache.put("t1", "i1", "one");
+        cache.put("t2", "i2", "two");
+
+        assertThat(cache.size()).isEqualTo(1);
+        assertThat(cache.get("t1", "i1")).isEmpty();
+        assertThat(cache.stats().evictions()).isEqualTo(1);
+        assertThat(cache.stats().bytes()).isLessThanOrEqualTo(70);
+    }
+
+    @Test
+    void reportsCacheEfficiencyMetricsAndSchemaVersion() {
+        DeterministicResultCache cache = new DeterministicResultCache(10);
+        cache.get("tool", "missing");
+        cache.put("tool", "input", "value");
+        cache.get("tool", "input");
+        cache.put(null, "input", "ignored");
+
+        DeterministicResultCache.Stats stats = cache.stats();
+        assertThat(stats.hits()).isEqualTo(1);
+        assertThat(stats.misses()).isEqualTo(1);
+        assertThat(stats.puts()).isEqualTo(1);
+        assertThat(stats.bypasses()).isEqualTo(1);
+        assertThat(stats.keySchemaVersion()).isEqualTo("v2");
+    }
 }

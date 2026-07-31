@@ -13,7 +13,10 @@ import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Lightweight HTTP server providing health diagnostic endpoints ({@code /healthz},
@@ -27,6 +30,8 @@ public final class HealthHttpServer implements AutoCloseable {
     private final Path configPath;
     private final DoctorService doctorService;
     private final ObjectMapper mapper = new ObjectMapper();
+    private final ExecutorService executor;
+    private final AtomicBoolean closed = new AtomicBoolean();
 
     public HealthHttpServer(int port, HarnessConfig config, Path configPath) throws IOException {
         this("127.0.0.1", port, config, configPath, new DoctorService());
@@ -45,8 +50,9 @@ public final class HealthHttpServer implements AutoCloseable {
         this.config = config;
         this.configPath = configPath;
         this.doctorService = doctorService;
+        this.executor = Executors.newVirtualThreadPerTaskExecutor();
         this.server = HttpServer.create(new InetSocketAddress(bindAddress, port), 0);
-        this.server.setExecutor(Executors.newVirtualThreadPerTaskExecutor());
+        this.server.setExecutor(executor);
 
         HealthHandler healthHandler = new HealthHandler();
         this.server.createContext("/healthz", healthHandler);
@@ -75,7 +81,15 @@ public final class HealthHttpServer implements AutoCloseable {
     }
 
     public void stop(int delaySeconds) {
+        if (!closed.compareAndSet(false, true)) return;
         server.stop(delaySeconds);
+        executor.shutdown();
+        try {
+            if (!executor.awaitTermination(5, TimeUnit.SECONDS)) executor.shutdownNow();
+        } catch (InterruptedException e) {
+            executor.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
         log.info("CastCLI Health HTTP Server stopped");
     }
 
