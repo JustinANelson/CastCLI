@@ -41,9 +41,18 @@ class EmbeddingConfigTest {
         assertThat(config.chunkLines()).isPositive();
         assertThat(config.chunkOverlapLines()).isBetween(0, config.chunkLines() - 1);
         assertThat(config.maxFileBytes()).isPositive();
+        assertThat(config.maxConcurrency()).isEqualTo(EmbeddingConfig.DEFAULT_MAX_CONCURRENCY);
         assertThat(config.includeGlobs()).isEqualTo(EmbeddingConfig.DEFAULT_INCLUDE_GLOBS);
         assertThat(config.excludeGlobs()).isEqualTo(EmbeddingConfig.DEFAULT_EXCLUDE_GLOBS);
         assertThat(config.indexPath()).isEqualTo(EmbeddingConfig.DEFAULT_INDEX_PATH);
+    }
+
+    @Test
+    void honorsExplicitMaxConcurrency() {
+        EmbeddingConfig config = new EmbeddingConfig(
+                true, "http://localhost/v1/", "m", null, 30, 10, 2, 1000, null, null, null, 0.0, 4);
+
+        assertThat(config.maxConcurrency()).isEqualTo(4);
     }
 
     @Test

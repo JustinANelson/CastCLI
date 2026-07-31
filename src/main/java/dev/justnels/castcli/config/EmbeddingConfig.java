@@ -21,7 +21,8 @@ public record EmbeddingConfig(
         List<String> includeGlobs,
         List<String> excludeGlobs,
         String indexPath,
-        double costPerMillionInputTokens) {
+        double costPerMillionInputTokens,
+        int maxConcurrency) {
 
     public static final List<String> DEFAULT_INCLUDE_GLOBS = List.of(
             "**/*.java", "**/*.kt", "**/*.kts", "**/*.py", "**/*.js", "**/*.jsx", "**/*.ts", "**/*.tsx",
@@ -39,10 +40,28 @@ public record EmbeddingConfig(
             "**/shadow", "**/passwd", "**/htpasswd", "**/auth.json", "**/netrc", "**/.netrc");
 
     public static final String DEFAULT_INDEX_PATH = ".cast/index/workspace-embeddings.json";
+    public static final int DEFAULT_MAX_CONCURRENCY = 8;
     private static final int DEFAULT_CHUNK_LINES = 60;
     private static final int DEFAULT_CHUNK_OVERLAP_LINES = 10;
     private static final long DEFAULT_MAX_FILE_BYTES = 300_000;
     private static final int DEFAULT_TIMEOUT_SECONDS = 60;
+
+    public EmbeddingConfig(
+            boolean enabled,
+            String baseUrl,
+            String modelName,
+            String apiKeyEnv,
+            int timeoutSeconds,
+            int chunkLines,
+            int chunkOverlapLines,
+            long maxFileBytes,
+            List<String> includeGlobs,
+            List<String> excludeGlobs,
+            String indexPath,
+            double costPerMillionInputTokens) {
+        this(enabled, baseUrl, modelName, apiKeyEnv, timeoutSeconds, chunkLines, chunkOverlapLines,
+                maxFileBytes, includeGlobs, excludeGlobs, indexPath, costPerMillionInputTokens, DEFAULT_MAX_CONCURRENCY);
+    }
 
     public EmbeddingConfig {
         if (enabled) {
@@ -61,6 +80,9 @@ public record EmbeddingConfig(
         if (maxFileBytes < 1) {
             maxFileBytes = DEFAULT_MAX_FILE_BYTES;
         }
+        if (maxConcurrency < 1) {
+            maxConcurrency = DEFAULT_MAX_CONCURRENCY;
+        }
         includeGlobs = (includeGlobs == null || includeGlobs.isEmpty()) ? DEFAULT_INCLUDE_GLOBS : List.copyOf(includeGlobs);
         excludeGlobs = (excludeGlobs == null || excludeGlobs.isEmpty()) ? DEFAULT_EXCLUDE_GLOBS : List.copyOf(excludeGlobs);
         indexPath = (indexPath == null || indexPath.isBlank()) ? DEFAULT_INDEX_PATH : indexPath;
@@ -71,7 +93,7 @@ public record EmbeddingConfig(
 
     public static EmbeddingConfig disabled() {
         return new EmbeddingConfig(false, null, null, null, DEFAULT_TIMEOUT_SECONDS, DEFAULT_CHUNK_LINES,
-                DEFAULT_CHUNK_OVERLAP_LINES, DEFAULT_MAX_FILE_BYTES, null, null, null, 0.0);
+                DEFAULT_CHUNK_OVERLAP_LINES, DEFAULT_MAX_FILE_BYTES, null, null, null, 0.0, DEFAULT_MAX_CONCURRENCY);
     }
 
     public boolean credentialsAvailable() {

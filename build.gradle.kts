@@ -230,3 +230,15 @@ tasks.register("setupMcp") {
         logger.lifecycle("=========================================================================")
     }
 }
+
+tasks.register<JavaExec>("generateAppCds") {
+    group = "distribution"
+    description = "Generates an AppCDS (Application Class Data Sharing) archive for instant JVM cold start."
+    dependsOn(tasks.named("installDist"))
+    classpath = files(tasks.named<CreateStartScripts>("startScripts").get().classpath)
+    mainClass = "dev.justnels.castcli.CastCli"
+    args = listOf("--help")
+    jvmArgs = listOf(
+        "-XX:ArchiveClassesAtExit=${layout.buildDirectory.get().asFile}/cast-cli.jsa"
+    )
+}

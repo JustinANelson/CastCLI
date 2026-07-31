@@ -6,6 +6,7 @@ import dev.langchain4j.data.embedding.Embedding;
 import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.model.embedding.EmbeddingModel;
 import dev.langchain4j.model.output.Response;
+import dev.langchain4j.model.output.TokenUsage;
 import dev.langchain4j.store.embedding.EmbeddingSearchRequest;
 import dev.langchain4j.store.embedding.EmbeddingSearchResult;
 import dev.langchain4j.store.embedding.filter.Filter;
@@ -30,6 +31,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Stream;
 
@@ -111,6 +113,8 @@ public final class WorkspaceEmbeddingIndex {
         int totalChunks = 0;
         long inputTokensUsed = 0;
 
+        Semaphore semaphore = new Semaphore(config.maxConcurrency());
+
         try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
             List<Future<FileProcessingTask>> futures = new ArrayList<>();
 
@@ -119,18 +123,23 @@ public final class WorkspaceEmbeddingIndex {
                     String relativePath = toRelativePath(file);
                     currentSources.add(relativePath);
 
+                    String hash;
+                    try {
+                        hash = FastFileHasher.hashFile(file);
+                    } catch (IOException | RuntimeException notText) {
+                        return null; // skip unreadable/binary files
+                    }
+
+                    List<TextSegment> existing = existingBySource.getOrDefault(relativePath, List.of());
+                    if (!existing.isEmpty() && hash.equals(existing.get(0).metadata().getString(HASH_KEY))) {
+                        return new FileProcessingTask(relativePath, true, List.of(), null, existing.size());
+                    }
+
                     List<String> lines;
                     try {
                         lines = Files.readAllLines(file, StandardCharsets.UTF_8);
                     } catch (IOException | RuntimeException notText) {
                         return null; // skip unreadable/binary files
-                    }
-                    String content = String.join("\n", lines);
-                    String hash = sha256(content);
-
-                    List<TextSegment> existing = existingBySource.getOrDefault(relativePath, List.of());
-                    if (!existing.isEmpty() && hash.equals(existing.get(0).metadata().getString(HASH_KEY))) {
-                        return new FileProcessingTask(relativePath, true, List.of(), null, existing.size());
                     }
 
                     List<TextSegment> segments = chunkFile(relativePath, lines, hash);
@@ -138,8 +147,13 @@ public final class WorkspaceEmbeddingIndex {
                         return new FileProcessingTask(relativePath, false, List.of(), null, 0);
                     }
 
-                    Response<List<Embedding>> response = embeddingModel.embedAll(segments);
-                    return new FileProcessingTask(relativePath, false, segments, response, 0);
+                    semaphore.acquire();
+                    try {
+                        Response<List<Embedding>> response = embedSegmentsInBatches(segments);
+                        return new FileProcessingTask(relativePath, false, segments, response, 0);
+                    } finally {
+                        semaphore.release();
+                    }
                 }));
             }
 
@@ -405,6 +419,31 @@ public final class WorkspaceEmbeddingIndex {
     private static int intMetadata(Metadata metadata, String key) {
         Integer value = metadata.getInteger(key);
         return value == null ? 0 : value;
+    }
+
+    private static final int MAX_EMBEDDING_BATCH_SIZE = 64;
+
+    private Response<List<Embedding>> embedSegmentsInBatches(List<TextSegment> segments) {
+        if (segments.size() <= MAX_EMBEDDING_BATCH_SIZE) {
+            return embeddingModel.embedAll(segments);
+        }
+
+        List<Embedding> allEmbeddings = new ArrayList<>(segments.size());
+        int totalInputTokens = 0;
+        boolean hasTokenUsage = false;
+
+        for (int i = 0; i < segments.size(); i += MAX_EMBEDDING_BATCH_SIZE) {
+            List<TextSegment> batch = segments.subList(i, Math.min(i + MAX_EMBEDDING_BATCH_SIZE, segments.size()));
+            Response<List<Embedding>> batchResponse = embeddingModel.embedAll(batch);
+            allEmbeddings.addAll(batchResponse.content());
+            if (batchResponse.tokenUsage() != null && batchResponse.tokenUsage().inputTokenCount() != null) {
+                totalInputTokens += batchResponse.tokenUsage().inputTokenCount();
+                hasTokenUsage = true;
+            }
+        }
+
+        TokenUsage tokenUsage = hasTokenUsage ? new TokenUsage(totalInputTokens, 0) : null;
+        return Response.from(allEmbeddings, tokenUsage);
     }
 
     private static String sha256(String content) {

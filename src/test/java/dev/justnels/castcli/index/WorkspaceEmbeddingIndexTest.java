@@ -139,6 +139,28 @@ class WorkspaceEmbeddingIndexTest {
         assertThat(hits).extracting(WorkspaceEmbeddingIndex.SearchHit::sourcePath).containsExactly("App.java");
     }
 
+    @Test
+    void rebuildHandlesMultipleFilesWithConstrainedConcurrencyAndSubBatching() throws IOException {
+        EmbeddingConfig constrainedConfig = new EmbeddingConfig(
+                true, "http://fake/v1/", "fake-embed", null, 30, 2, 0, 300_000, null, null, null, 0.0, 2);
+
+        for (int i = 0; i < 10; i++) {
+            StringBuilder content = new StringBuilder();
+            for (int l = 0; l < 150; l++) {
+                content.append("Line ").append(l).append(" in file ").append(i).append("\n");
+            }
+            Files.writeString(workspace.resolve("File" + i + ".java"), content.toString());
+        }
+
+        WorkspaceEmbeddingIndex index = new WorkspaceEmbeddingIndex(constrainedConfig, workspace, embeddingModel);
+        WorkspaceEmbeddingIndex.IndexReport report = index.rebuild();
+
+        assertThat(report.filesScanned()).isEqualTo(10);
+        assertThat(report.filesEmbedded()).isEqualTo(10);
+        assertThat(report.totalChunks()).isGreaterThan(100);
+        assertThat(embeddingModel.calls).isNotEmpty();
+    }
+
     /** Deterministic bag-of-words embedding model: hashes each word into one of a fixed number of
      * buckets, so texts sharing vocabulary end up with similar vectors, without any network calls. */
     private static final class FakeEmbeddingModel implements EmbeddingModel {
