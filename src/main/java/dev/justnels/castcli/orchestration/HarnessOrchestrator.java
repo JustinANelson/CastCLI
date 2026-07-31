@@ -560,6 +560,33 @@ public class HarnessOrchestrator {
                 .attribute("gen_ai.provider.name", provider.id())
                 .attribute("gen_ai.request.model", provider.modelName())) {
         telemetry.annotatePrompt(span, task.prompt());
+
+        if (provider.tier() == ModelTier.FRONTIER_CLOUD) {
+            dev.justnels.castcli.security.ContextFirewall firewall = new dev.justnels.castcli.security.ContextFirewall();
+            dev.justnels.castcli.security.ContextFirewall.FirewallDecision decision = firewall.inspect(task.prompt(), List.of());
+            if (!decision.allowed()) {
+                throw new SecurityException("Context Firewall blocked cloud dispatch to provider '"
+                        + provider.id() + "': " + decision.denialReason());
+            }
+            try {
+                dev.justnels.castcli.security.EgressManifest manifest = new dev.justnels.castcli.security.EgressManifest(
+                        span.traceId(),
+                        null,
+                        provider.id(),
+                        provider.modelName(),
+                        decision.classification(),
+                        0,
+                        task.prompt().getBytes(java.nio.charset.StandardCharsets.UTF_8).length,
+                        task.prompt().length() / 4,
+                        telemetry.promptHash(task.prompt()),
+                        List.of(),
+                        true);
+                Path egressDir = Path.of(config.tools().workspaceRoot()).resolve(".cast/egress");
+                manifest.saveTo(egressDir);
+            } catch (Exception ignored) {
+            }
+        }
+
         ChatModel model = modelFactory.create(provider);
 
         if (!provider.toolsEnabled() || (selectedTools.isEmpty() && mcpToolProvider == null)) {

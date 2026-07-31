@@ -2,14 +2,15 @@
 
 ## Current objective
 
-Implement high-impact features: `cast connect` client integration generator (R-004) and resilient dynamic HTTP indexing timeouts/batching.
+Implement Context Egress Firewall & Cloud Egress Manifests (R-102): privacy classification (`PUBLIC`, `INTERNAL`, `CONFIDENTIAL`, `RESTRICTED`), secret redaction, path deny-globs, and cloud egress manifests.
 
 ## Checklist
 
-- [x] Create `ConnectService` and client connectors (`claude`, `codex`, `cursor`, `continue`, `aider`).
-- [x] Add Picocli `Connect` subcommand (`CastCli.ConnectCmd`) with `--check`, `--dry-run`, `--disconnect`, `--force`, `--list`.
-- [x] Add unit tests for `ConnectService` in `ConnectServiceTest`.
-- [x] Add dynamic batch split-and-retry logic for vector indexing in `WorkspaceEmbeddingIndex`.
+- [x] Create `ContextClassification` enum in `dev.justnels.castcli.security`.
+- [x] Create `ContextFirewall` evaluating classification, secret redaction, deny-globs, and egress limits.
+- [x] Create `EgressManifest` representing cloud egress records stored in `.cast/egress/`.
+- [x] Integrate `ContextFirewall` in `HarnessOrchestrator` before `FRONTIER_CLOUD` model dispatch.
+- [x] Create unit tests in `ContextFirewallTest.java`.
 - [x] Verify implementation with `.\gradlew.bat test`, `.\gradlew.bat check`, `git diff --check`, and `mcp-usage` audit.
 
 ## Blockers and open decisions
@@ -18,18 +19,17 @@ None. Feature implementations complete and verified.
 
 ## Next action
 
-Summary reported to user. Ready for additional tasks.
+Summary reported to user. Ready for next recommendations (R-103 AST Token Compiler / R-201 Profiler).
 
 ## Relevant paths
 
-- `src/main/java/dev/justnels/castcli/connect/`
-- `src/main/java/dev/justnels/castcli/CastCli.java`
-- `src/main/java/dev/justnels/castcli/index/WorkspaceEmbeddingIndex.java`
-- `src/test/java/dev/justnels/castcli/connect/`
+- `src/main/java/dev/justnels/castcli/security/`
+- `src/main/java/dev/justnels/castcli/orchestration/HarnessOrchestrator.java`
+- `src/test/java/dev/justnels/castcli/security/`
 
 ## Verification status
 
-- `.\gradlew.bat test`: passed (all 296 unit tests passed).
-- `.\gradlew.bat check`: passed (checkstyle & JaCoCo 70%+ instructions coverage verified).
+- `.\gradlew.bat test`: passed (all 314 unit tests passed).
+- `.\gradlew.bat check`: passed (Checkstyle & JaCoCo 70%+ coverage verified).
 - `git diff --check`: passed.
-- `mcp-usage` delegation audit: passed ($0.63041 estimated avoided spend recorded).
+- `mcp-usage` delegation audit: passed.

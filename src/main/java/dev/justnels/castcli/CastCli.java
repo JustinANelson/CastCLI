@@ -56,6 +56,9 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.Callable;
 
+import dev.justnels.castcli.routing.DryRunService;
+import dev.justnels.castcli.observability.TraceExplanationService;
+
 @Command(
         name = "cast-cli",
         description = "CastCLI: Route tasks across local and frontier LLMs.",
@@ -64,7 +67,8 @@ import java.util.concurrent.Callable;
         subcommands = {CastCli.Ask.class, CastCli.Models.class, CastCli.Commission.class, CastCli.McpServe.class,
                 CastCli.Index.class, CastCli.RouteEval.class, CastCli.Memory.class, CastCli.SessionCmd.class, CastCli.Telemetry.class,
                 CastCli.McpUsage.class, CastCli.Doctor.class, CastCli.HealthServer.class, CastCli.Gateway.class,
-                CastCli.Completion.class, CastCli.ConfigCmd.class, CastCli.Init.class, CastCli.ConnectCmd.class})
+                CastCli.Completion.class, CastCli.ConfigCmd.class, CastCli.Init.class, CastCli.ConnectCmd.class,
+                CastCli.DryRunCmd.class, CastCli.ExplainCmd.class})
 public final class CastCli implements Runnable {
     @Option(names = "--config", description = "Path to CastCLI JSON configuration.",
             defaultValue = ".cast/harness.local.json")
@@ -1168,6 +1172,75 @@ public final class CastCli implements Runnable {
                 System.out.println(result.diff());
             }
             return result.success() ? 0 : 1;
+        }
+    }
+
+    @Command(name = "dry-run", description = "Perform inspectable, zero-cost routing dry-run without model invocation.",
+            mixinStandardHelpOptions = true)
+    static final class DryRunCmd implements Callable<Integer> {
+        @CommandLine.ParentCommand private CastCli parent;
+
+        @Parameters(index = "0", description = "Prompt or task description to evaluate.")
+        private String prompt;
+
+        @Option(names = "--tier", description = "Request specific tier: SMALL_LOCAL, LARGE_LOCAL, FRONTIER_CLOUD.")
+        private ModelTier tier;
+
+        @Option(names = "--workload", description = "Workload hint: CODER, GENERAL_LABOR, REVIEWER, TESTER.")
+        private Workload workload;
+
+        @Option(names = "--strict", description = "Enforce strict requested tier match.")
+        private boolean strict;
+
+        @Option(names = "--json", description = "Output dry-run report as JSON.")
+        private boolean json;
+
+        @Override
+        public Integer call() throws Exception {
+            HarnessConfig config = parent.loadConfig();
+            TaskRequest request = new TaskRequest(prompt, workload == null ? Workload.AUTO : workload, tier, strict);
+            DryRunService service = new DryRunService();
+            DryRunService.DryRunReport report = service.dryRun(config, request);
+
+            if (json) {
+                ObjectMapper mapper = new ObjectMapper().enable(com.fasterxml.jackson.databind.SerializationFeature.INDENT_OUTPUT);
+                System.out.println(mapper.writeValueAsString(report));
+            } else {
+                System.out.print(report.toHumanReadableString());
+            }
+            return 0;
+        }
+    }
+
+    @Command(name = "explain", description = "Explain routing decisions and execution events for a trace ID.",
+            mixinStandardHelpOptions = true)
+    static final class ExplainCmd implements Callable<Integer> {
+        @CommandLine.ParentCommand private CastCli parent;
+
+        @Parameters(index = "0", arity = "0..1", description = "Trace ID to explain (defaults to most recent trace).")
+        private String traceId;
+
+        @Option(names = "--json", description = "Output trace explanation report as JSON.")
+        private boolean json;
+
+        @Override
+        public Integer call() throws Exception {
+            HarnessConfig config = parent.loadConfig();
+            Path tracePath = Path.of(config.observability().jsonlPath());
+            if (!tracePath.isAbsolute()) {
+                tracePath = Path.of(config.tools().workspaceRoot()).toAbsolutePath().normalize().resolve(tracePath);
+            }
+
+            TraceExplanationService service = new TraceExplanationService();
+            TraceExplanationService.TraceExplanationReport report = service.explainTrace(tracePath, traceId);
+
+            if (json) {
+                ObjectMapper mapper = new ObjectMapper().enable(com.fasterxml.jackson.databind.SerializationFeature.INDENT_OUTPUT);
+                System.out.println(mapper.writeValueAsString(report));
+            } else {
+                System.out.print(report.narrative());
+            }
+            return 0;
         }
     }
 }
