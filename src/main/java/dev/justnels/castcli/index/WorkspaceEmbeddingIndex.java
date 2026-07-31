@@ -108,7 +108,7 @@ public final class WorkspaceEmbeddingIndex {
         return indexFile;
     }
 
-    private record CachedStore(InMemoryEmbeddingStore<TextSegment> store, long mtimeMillis) { }
+    private record CachedStore(ShardedEmbeddingStore store, long mtimeMillis) { }
 
     private record FileProcessingTask(
             String relativePath, boolean unchanged, boolean failed, String failureMessage,
@@ -127,9 +127,9 @@ public final class WorkspaceEmbeddingIndex {
      * {@code rebuild()} call, since they aren't recorded as unchanged. */
     public IndexReport rebuild(ProgressListener listener) throws IOException {
         long startTime = System.currentTimeMillis();
-        InMemoryEmbeddingStore<TextSegment> store = Files.isRegularFile(indexFile)
-                ? InMemoryEmbeddingStore.fromFile(indexFile)
-                : new InMemoryEmbeddingStore<>();
+        ShardedEmbeddingStore store = Files.isRegularFile(indexFile) || Files.isDirectory(ShardedEmbeddingStore.computeShardsDir(indexFile))
+                ? ShardedEmbeddingStore.load(indexFile)
+                : new ShardedEmbeddingStore(indexFile);
 
         Set<String> previousSources = store.isEmpty() ? Set.of() : allDistinctSources(store);
         java.util.Map<String, List<TextSegment>> existingBySource = new java.util.HashMap<>();
@@ -254,8 +254,10 @@ public final class WorkspaceEmbeddingIndex {
             store.removeAll(sourceFilter(removed));
         }
 
-        Files.createDirectories(indexFile.getParent());
-        store.serializeToFile(indexFile);
+        if (indexFile.getParent() != null) {
+            Files.createDirectories(indexFile.getParent());
+        }
+        store.save();
         cachedStore = new CachedStore(store, Files.getLastModifiedTime(indexFile).toMillis());
 
         long duration = System.currentTimeMillis() - startTime;
@@ -272,7 +274,7 @@ public final class WorkspaceEmbeddingIndex {
 
     /** Semantically searches the persisted index with an explicit minimum similarity score threshold. */
     public List<SearchHit> search(String query, int maxResults, double minScore) {
-        InMemoryEmbeddingStore<TextSegment> store = loadStoreCached();
+        ShardedEmbeddingStore store = loadStoreCached();
         Embedding queryEmbedding = embeddingModel.embed(query).content();
 
         EmbeddingSearchRequest request = EmbeddingSearchRequest.builder()
@@ -359,14 +361,16 @@ public final class WorkspaceEmbeddingIndex {
 
     /** Loads the persisted store, reusing the in-memory cache when {@link #indexFile}'s last-modified
      * time hasn't changed since it was last read or written by this instance. */
-    private InMemoryEmbeddingStore<TextSegment> loadStoreCached() {
-        if (!Files.isRegularFile(indexFile)) {
+    private ShardedEmbeddingStore loadStoreCached() {
+        if (!Files.isRegularFile(indexFile) && !Files.isDirectory(ShardedEmbeddingStore.computeShardsDir(indexFile))) {
             throw new IllegalStateException(
                     "No semantic index found at " + indexFile + ". Run 'llm-harness index' first.");
         }
         long mtime;
         try {
-            mtime = Files.getLastModifiedTime(indexFile).toMillis();
+            mtime = Files.isRegularFile(indexFile)
+                    ? Files.getLastModifiedTime(indexFile).toMillis()
+                    : Files.getLastModifiedTime(ShardedEmbeddingStore.computeShardsDir(indexFile)).toMillis();
         } catch (IOException e) {
             throw new IllegalStateException("Failed to read semantic index at " + indexFile, e);
         }
@@ -374,7 +378,7 @@ public final class WorkspaceEmbeddingIndex {
         if (cached != null && cached.mtimeMillis() == mtime) {
             return cached.store();
         }
-        InMemoryEmbeddingStore<TextSegment> loaded = InMemoryEmbeddingStore.fromFile(indexFile);
+        ShardedEmbeddingStore loaded = ShardedEmbeddingStore.load(indexFile);
         cachedStore = new CachedStore(loaded, mtime);
         return loaded;
     }
@@ -473,11 +477,11 @@ public final class WorkspaceEmbeddingIndex {
 
     /** Fetches every chunk for a given file's metadata without a real similarity search: a filter-only,
      * zero-vector, {@code minScore=0} query returns every entry the filter admits regardless of score. */
-    private List<TextSegment> findBySource(InMemoryEmbeddingStore<TextSegment> store, String relativePath) {
+    private List<TextSegment> findBySource(ShardedEmbeddingStore store, String relativePath) {
         return scanWithFilter(store, sourceFilter(relativePath));
     }
 
-    private Set<String> allDistinctSources(InMemoryEmbeddingStore<TextSegment> store) {
+    private Set<String> allDistinctSources(ShardedEmbeddingStore store) {
         Set<String> sources = new LinkedHashSet<>();
         for (TextSegment segment : scanWithFilter(store, null)) {
             String source = segment.metadata().getString(SOURCE_KEY);
@@ -488,7 +492,7 @@ public final class WorkspaceEmbeddingIndex {
         return sources;
     }
 
-    private List<TextSegment> scanWithFilter(InMemoryEmbeddingStore<TextSegment> store, Filter filter) {
+    private List<TextSegment> scanWithFilter(ShardedEmbeddingStore store, Filter filter) {
         if (store.isEmpty()) {
             return List.of();
         }

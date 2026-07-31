@@ -2,36 +2,35 @@
 
 ## Current objective
 
-Fix `cast-cli index` HTTP timeout exceptions when indexing repositories by making embedding batch sizes, HTTP retries, and timeout parameters configurable with resilient defaults.
+Implement multi-file sharded workspace embedding index in CastCLI to eliminate $O(N)$ full-file re-serialization overhead on incremental workspace edits.
 
 ## Checklist
 
-- [x] Update `EmbeddingConfig.java` to add `maxBatchSize` (default 16) and `maxRetries` (default 1) with backward-compatible constructors.
-- [x] Update `EmbeddingModelFactory.java` to pass `maxRetries` to `OpenAiEmbeddingModel`.
-- [x] Update `WorkspaceEmbeddingIndex.java` to use `config.maxBatchSize()` instead of hardcoded 64.
-- [x] Update `ConfigValidator.java` to validate `maxBatchSize` and `maxRetries`.
-- [x] Update and add unit tests in `EmbeddingConfigTest.java` and `WorkspaceEmbeddingIndexTest.java`.
-- [x] Verify implementation with `.\gradlew.bat test`, `.\gradlew.bat check`, `git diff --check`, and MCP delegation audit.
+- [x] Create `ShardedEmbeddingStore.java` to handle bucketed shard partitions and selective dirty shard re-serialization.
+- [x] Invoked CastCLI MCP delegation tools (`generate_tests`, `summarize_files`, `map_change_impact`, `review_diff`).
+- [x] Create `ShardedEmbeddingStoreTest.java` to test sharded store creation, search, and dirty shard serialization.
+- [x] Modify `WorkspaceEmbeddingIndex.java` to integrate `ShardedEmbeddingStore` for index rebuilds and searches.
+- [x] Verify implementation with `.\gradlew.bat test`, `.\gradlew.bat check`, and `git diff --check`.
+- [x] Perform CastCLI delegation audit (`.\gradlew.bat run --args="..."`).
 
 ## Blockers and open decisions
 
-None. Feature implementation and verification complete.
+None. Feature implementation, testing, build check, and delegation audit fully verified and passing.
 
 ## Next action
 
-Summary reported to user.
+Report task completion to the user.
 
 ## Relevant paths
 
-- `src/main/java/dev/justnels/castcli/config/EmbeddingConfig.java`
-- `src/main/java/dev/justnels/castcli/config/ConfigValidator.java`
-- `src/main/java/dev/justnels/castcli/model/EmbeddingModelFactory.java`
+- `src/main/java/dev/justnels/castcli/index/ShardedEmbeddingStore.java`
 - `src/main/java/dev/justnels/castcli/index/WorkspaceEmbeddingIndex.java`
-- `src/test/java/dev/justnels/castcli/`
+- `src/test/java/dev/justnels/castcli/index/ShardedEmbeddingStoreTest.java`
+- `src/test/java/dev/justnels/castcli/index/WorkspaceEmbeddingIndexTest.java`
 
 ## Verification status
 
 - `.\gradlew.bat test`: passed.
 - `.\gradlew.bat check`: passed.
-- `git diff --check`: passed.
-- `mcp-usage` audit: passed.
+- `git diff --check`: passed cleanly.
+- `mcp-usage` delegation audit: passed.
