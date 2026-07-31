@@ -13,10 +13,13 @@ class MemoryContextProviderTest {
     void injectsRelevantMemoryWithinBudget() {
         SqliteMemoryStore store = new SqliteMemoryStore(tempDir.resolve("memory.db"));
         store.put(MemoryDraft.shared("project", "database", "Use PostgreSQL for durable production state", "architect"));
+        store.put(MemoryDraft.shared("session", "session-summary:s1", "Session s1 completed database schema migration", "PM"));
+
         MemoryContextProvider provider = new MemoryContextProvider(store,
                 new MemoryConfig(true, null, "project", 300, 5, 0));
-        String augmented = provider.augment("Which database should this service use?");
-        assertThat(augmented).contains("Relevant shared project memory", "PostgreSQL", "Current task:");
-        assertThat(augmented.length()).isLessThan(500);
+        String augmented = provider.augment("Which database should this service use and what was done in prior session?");
+
+        assertThat(augmented).contains("Relevant shared project memory", "PostgreSQL", "database schema migration", "Current task:");
+        assertThat(augmented.length()).isLessThan(600);
     }
 }

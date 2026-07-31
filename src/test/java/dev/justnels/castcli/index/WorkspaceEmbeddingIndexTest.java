@@ -12,7 +12,6 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
@@ -144,7 +143,7 @@ class WorkspaceEmbeddingIndexTest {
      * buckets, so texts sharing vocabulary end up with similar vectors, without any network calls. */
     private static final class FakeEmbeddingModel implements EmbeddingModel {
         private static final int DIMENSION = 16;
-        final List<List<String>> calls = new ArrayList<>();
+        final List<List<String>> calls = new java.util.concurrent.CopyOnWriteArrayList<>();
 
         @Override
         public int dimension() {

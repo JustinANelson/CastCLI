@@ -2,16 +2,14 @@
 
 ## Current objective
 
-Implement background local LLM session action summarization and local long-term memory turnover in CastCLI, with agent instructions in AGENTS.md.
+Implement efficiency recommendations for session memory turnover (on-demand semantic retrieval & multi-namespace pre-flight prompt augmentation).
 
 ## Checklist
 
-- [x] Obtain user review and approval for `implementation_plan.md`.
-- [x] Implement `SessionAction` and `SessionMemorySummarizer` for background local LLM summarization and memory store turnover.
-- [x] Enhance `MemoryTools` and `McpStdioServer` with `summarize_session` and `recall_session_memory` tools.
-- [x] Integrate session memory recording and background summarization into `AgentTeam` and `CastCli`.
-- [x] Add session turnover guidelines to `AGENTS.md` and update documentation (`docs/ARCHITECTURE.md`, `docs/CODEX_MCP.md`, `docs/COMMANDS.md`).
-- [x] Add unit and integration tests (`SessionMemorySummarizerTest`, `McpStdioServerTest`) and verify with `.\gradlew.bat test` and `.\gradlew.bat check`.
+- [x] Update `MemoryContextProvider` to perform multi-namespace hybrid search across project and session memory with strict context bounds.
+- [x] Refine `AGENTS.md` instructions for query-driven semantic session turnover retrieval.
+- [x] Add unit test verifying multi-namespace prompt augmentation in `MemoryContextProviderTest`.
+- [x] Run `.\gradlew.bat test` and `.\gradlew.bat check` to verify changes.
 
 ## Blockers and open decisions
 
