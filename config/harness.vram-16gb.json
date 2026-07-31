@@ -4,7 +4,7 @@
       "id": "coder-local-16gb-small",
       "tier": "SMALL_LOCAL",
       "baseUrl": "${OLLAMA_BASE_URL:http://localhost:11434/v1/}",
-      "modelName": "qwen2.5-coder:7b-instruct-q8_0",
+      "modelName": "qwen2.5-coder:3b",
       "apiKeyEnv": null,
       "temperature": 0.1,
       "timeoutSeconds": 120,

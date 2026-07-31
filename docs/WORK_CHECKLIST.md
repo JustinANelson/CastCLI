@@ -2,16 +2,14 @@
 
 ## Current objective
 
-Implement 4 local LLM offloading & memory management enhancements (`LocalReworkVerifier`, `LocalMemoryCleaner`, `LocalContextCompressor`, `LocalPreFlightClassifier`).
+Optimize hardware preset configuration tiers (`SMALL_LOCAL` vs `LARGE_LOCAL`) for low latency and zero Ollama VRAM swapping.
 
 ## Checklist
 
-- [x] Obtain user review and approval for `implementation_plan.md`.
-- [x] Implement `LocalReworkVerifier` for self-correcting local model execution loops.
-- [x] Implement `LocalMemoryCleaner` for background session memory consolidation and deduplication.
-- [x] Implement `LocalContextCompressor` for dense tool output/log compression.
-- [x] Implement `LocalPreFlightClassifier` for automatic local tier offloading.
-- [x] Add unit tests for all 4 new components and verify with `.\gradlew.bat test` and `.\gradlew.bat check`.
+- [x] Update `.cast/harness.local.json` to use `qwen2.5-coder:1.5b` for `SMALL_LOCAL` and `qwen2.5-coder:7b` for `LARGE_LOCAL`.
+- [x] Pull `qwen2.5-coder:1.5b` via Ollama.
+- [x] Update hardware preset configs in `config/` (`harness.vram-8gb.json`, `harness.vram-12gb.json`, `harness.vram-16gb.json`, `harness.apple-silicon.json`).
+- [x] Verify latency drop (from 9.4s down to ~1.4s–2.7s per request) and run `.\gradlew.bat test` and `.\gradlew.bat check`.
 
 ## Blockers and open decisions
 

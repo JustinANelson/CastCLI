@@ -54,7 +54,7 @@ class InitServiceTest {
         assertThat(target).exists();
 
         List<String> models = service.localModelNames(target);
-        assertThat(models).contains("qwen2.5-coder:7b-instruct-q4_K_M", "deepseek-r1:8b");
+        assertThat(models).contains("qwen2.5-coder:1.5b", "deepseek-r1:8b");
 
         String baseUrl = service.firstLocalBaseUrl(target);
         assertThat(baseUrl).contains("localhost");
@@ -182,12 +182,12 @@ class InitServiceTest {
 
     @Test
     void runSubstitutesAnAlreadyInstalledCompatibleModelIntoTheWrittenConfig(@TempDir Path tempDir) throws Exception {
-        // Simulates Ollama's /api/tags reporting "qwen2.5-coder:7b" and "gemma4:12b" installed, neither of
-        // which exactly matches the 8GB preset's "qwen2.5-coder:7b-instruct-q4_K_M" / "deepseek-r1:8b", but
+        // Simulates Ollama's /api/tags reporting "qwen2.5-coder:1.5b-instruct" and "gemma4:12b" installed, neither of
+        // which exactly matches the 8GB preset's "qwen2.5-coder:1.5b" / "deepseek-r1:8b", but
         // the qwen tag is an acceptable family+size stand-in for the SMALL_LOCAL tier.
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/api/tags", exchange -> {
-            String body = "{\"models\":[{\"name\":\"qwen2.5-coder:7b\"},{\"name\":\"gemma4:12b\"}]}";
+            String body = "{\"models\":[{\"name\":\"qwen2.5-coder:1.5b-instruct\"},{\"name\":\"gemma4:12b\"}]}";
             byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
             exchange.sendResponseHeaders(200, bytes.length);
             exchange.getResponseBody().write(bytes);
@@ -202,10 +202,10 @@ class InitServiceTest {
             InitService.InitReport report = service.run(InitService.Preset.VRAM_8GB, "forced for test", target, baseUrl);
 
             assertThat(report.substitutedModels())
-                    .containsEntry("qwen2.5-coder:7b-instruct-q4_K_M", "qwen2.5-coder:7b");
-            assertThat(report.requiredLocalModels()).contains("qwen2.5-coder:7b");
+                    .containsEntry("qwen2.5-coder:1.5b", "qwen2.5-coder:1.5b-instruct");
+            assertThat(report.requiredLocalModels()).contains("qwen2.5-coder:1.5b-instruct");
             assertThat(report.missingModels()).containsExactly("deepseek-r1:8b");
-            assertThat(service.localModelNames(target)).contains("qwen2.5-coder:7b");
+            assertThat(service.localModelNames(target)).contains("qwen2.5-coder:1.5b-instruct");
         } finally {
             server.stop(0);
         }
