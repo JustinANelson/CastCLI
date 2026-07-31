@@ -915,7 +915,12 @@ public final class CastCli implements Runnable {
             private static final long PROGRESS_PRINT_INTERVAL_NANOS = 200_000_000L;
             private static final char[] SPINNER_FRAMES = {'|', '/', '-', '\\'};
 
-            private volatile long lastPrintNanos = Long.MIN_VALUE;
+            // System.nanoTime() has an arbitrary, JVM-specific origin -- comparing it against Long.MIN_VALUE
+            // as a "never printed yet" sentinel overflows the `now - lastPrintNanos` subtraction and wraps
+            // to a large negative number, so the very first (and every subsequent) throttle check silently
+            // fails forever. Seed it from an actual nanoTime() reading instead so the first check is a
+            // normal, non-overflowing comparison that always passes.
+            private volatile long lastPrintNanos = System.nanoTime() - PROGRESS_PRINT_INTERVAL_NANOS;
             private int spinnerFrame = 0;
 
             @Override
