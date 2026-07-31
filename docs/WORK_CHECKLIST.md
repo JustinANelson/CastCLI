@@ -2,16 +2,13 @@
 
 ## Current objective
 
-Implement final vector index, dual-probe, SSE streaming, and SQLite WAL checkpointing optimizations.
+Establish mandatory CastCLI delegation triggers in repository agent guidance (`AGENTS.md`) and system documentation (`CODEX_MCP.md`).
 
 ## Checklist
 
-- [x] Obtain user review and approval for `implementation_plan.md`.
-- [x] Implement vector index startup optimization in `WorkspaceEmbeddingIndex`.
-- [x] Add dual-probe resilience support in `ReliabilityExecutor`.
-- [x] Optimize SSE streaming response chunking in `ChatCompletionsHandler`.
-- [x] Implement passive SQLite WAL checkpointing (`PRAGMA wal_checkpoint(PASSIVE)`) in `SqliteMemoryStore`.
-- [x] Add unit tests and verify with `.\gradlew.bat test` and `.\gradlew.bat check`.
+- [x] Define mandatory delegation triggers in `AGENTS.md` (`generate_tests`, `review_diff`, `map_change_impact`, `analyze_failure`).
+- [x] Update `docs/CODEX_MCP.md` to reference mandatory delegation triggers.
+- [x] Verify with `git diff --check` and `.\gradlew.bat check`.
 
 ## Blockers and open decisions
 

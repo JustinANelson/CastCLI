@@ -18,11 +18,29 @@ Read project documentation only when relevant:
 
 ## CastCLI delegation
 
-When the CastCLI MCP server is available, actively look for one eligible subtask during each substantial coding
-turn. Delegate only bounded, read-only, low-risk work when verification is materially cheaper than producing the
-result. Prefer the most specific structured tool (`summarize_files`, `analyze_failure`, `draft_patch`,
-`generate_tests`, `review_diff`, or `map_change_impact`), then use `ask_local` only when none fits. Skip
-delegation when the task is too small to repay tool latency and review cost.
+When the CastCLI MCP server is available, actively look for eligible subtasks during each coding turn. Delegate bounded, read-only, low-risk work when verification is materially cheaper than producing the result directly.
+
+### Mandatory Delegation Triggers
+
+Agents MUST invoke CastCLI MCP tools for the following subtasks before proceeding with direct frontier execution:
+
+1. **Unit Test Generation (`generate_tests`)**:
+   - **Trigger**: When adding a new Java class or creating a new feature method.
+   - **Action**: Call `generate_tests` with the target file path to draft unit test skeletons on `LARGE_LOCAL` before writing test files.
+
+2. **Patch & Diff Review (`review_diff`)**:
+   - **Trigger**: Before running `.\gradlew.bat test` or `.\gradlew.bat check`.
+   - **Action**: Call `review_diff` with the target path to inspect syntax and catch missing imports on `LARGE_LOCAL`.
+
+3. **Multi-File Impact Analysis (`map_change_impact` / `summarize_files`)**:
+   - **Trigger**: When modifying interfaces, core records, or multi-file dependencies.
+   - **Action**: Call `map_change_impact` or `summarize_files` to evaluate impacted files before making edits.
+
+4. **Failure Analysis (`analyze_failure`)**:
+   - **Trigger**: When a build task or unit test fails with an exception or stack trace.
+   - **Action**: Call `analyze_failure` with the error output to extract root cause recommendations on `SMALL_LOCAL`.
+
+### Delegation Rules
 
 Do not delegate credentials, security or authorization decisions, destructive changes, production operations,
 final correctness review, or work requiring unabridged large context. Treat local-model output as untrusted until

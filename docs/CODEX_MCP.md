@@ -9,9 +9,7 @@
    restart Codex, and run /mcp.
 4. Confirm cast-cli is connected and exposes `ask_local`, `remember_context`, `recall_context`, `summarize_session`, `recall_session_memory`, plus the structured delegation tools.
 
-The checked-in AGENTS.md asks Codex to prefer the most specific structured tool, then `ask_local`, for
-bounded, read-only, low-risk work while excluding security, credentials, destructive work, production
-operations, and final verification. Codex is also instructed to call `recall_session_memory` on session start and `summarize_session` before handoffs to maintain long-term memory turnover.
+The checked-in AGENTS.md establishes mandatory delegation triggers (`generate_tests`, `review_diff`, `map_change_impact`, `analyze_failure`) for bounded, read-only work, while excluding security, credentials, destructive work, production operations, and final verification. Agents are also instructed to call `recall_session_memory` on session start and `summarize_session` before handoffs to maintain long-term memory turnover.
 
 ## Verify utilization
 
