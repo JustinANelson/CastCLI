@@ -7,6 +7,7 @@ import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.model.embedding.EmbeddingModel;
 import dev.langchain4j.model.output.Response;
 import dev.langchain4j.model.output.TokenUsage;
+import dev.langchain4j.store.embedding.EmbeddingMatch;
 import dev.langchain4j.store.embedding.EmbeddingSearchRequest;
 import dev.langchain4j.store.embedding.EmbeddingSearchResult;
 import dev.langchain4j.store.embedding.filter.Filter;
@@ -54,6 +55,10 @@ public final class WorkspaceEmbeddingIndex {
     private static final String HASH_KEY = "contentHash";
     private static final String START_LINE_KEY = "startLine";
     private static final String END_LINE_KEY = "endLine";
+    // Recorded alongside contentHash so an unchanged file can be recognized from a single stat() call
+    // instead of re-reading and re-hashing its full content on every rebuild.
+    private static final String MTIME_KEY = "mtime";
+    private static final String SIZE_KEY = "fileSize";
 
     private final EmbeddingConfig config;
     private final Path workspaceRoot;
@@ -149,16 +154,19 @@ public final class WorkspaceEmbeddingIndex {
                 ? ShardedEmbeddingStore.load(indexFile)
                 : new ShardedEmbeddingStore(indexFile);
 
-        Set<String> previousSources = store.isEmpty() ? Set.of() : allDistinctSources(store);
-        java.util.Map<String, List<TextSegment>> existingBySource = new java.util.HashMap<>();
+        // A single full-store scan serves both previousSources and existingBySource -- scanWithFilter's
+        // "everything" query costs O(index size) (brute-force similarity + a full sort, even though the
+        // score is discarded), so it must not be paid twice on every rebuild as the index grows.
+        java.util.Map<String, List<EmbeddingMatch<TextSegment>>> existingBySource = new java.util.HashMap<>();
         if (!store.isEmpty()) {
-            for (TextSegment segment : scanWithFilter(store, null)) {
-                String source = segment.metadata().getString(SOURCE_KEY);
+            for (EmbeddingMatch<TextSegment> match : scanWithFilter(store, null)) {
+                String source = match.embedded().metadata().getString(SOURCE_KEY);
                 if (source != null) {
-                    existingBySource.computeIfAbsent(source, k -> new ArrayList<>()).add(segment);
+                    existingBySource.computeIfAbsent(source, k -> new ArrayList<>()).add(match);
                 }
             }
         }
+        Set<String> previousSources = Set.copyOf(existingBySource.keySet());
 
         List<Path> files = collectIncludedFiles();
         Set<String> currentSources = ConcurrentHashMap.newKeySet();
@@ -204,6 +212,35 @@ public final class WorkspaceEmbeddingIndex {
                         String relativePath = toRelativePath(file);
                         currentSources.add(relativePath);
 
+                        BasicFileAttributes attrs;
+                        try {
+                            attrs = Files.readAttributes(file, BasicFileAttributes.class);
+                        } catch (IOException notReadable) {
+                            int c = completedCount.incrementAndGet();
+                            listener.onFileProcessed(c, totalFiles, relativePath, false);
+                            return null; // skip unreadable/binary files
+                        }
+                        long currentMtime = attrs.lastModifiedTime().toMillis();
+                        long currentSize = attrs.size();
+
+                        List<EmbeddingMatch<TextSegment>> existing = existingBySource.getOrDefault(relativePath, List.of());
+
+                        // Fast path: mtime+size match what was recorded at the last index, so the content
+                        // can't have changed. Skips reading and hashing the file entirely -- the dominant
+                        // cost of a "nothing changed" rebuild on a large, mostly-unchanged codebase.
+                        if (!existing.isEmpty()) {
+                            Metadata firstMeta = existing.get(0).embedded().metadata();
+                            Long storedMtime = firstMeta.getLong(MTIME_KEY);
+                            Long storedSize = firstMeta.getLong(SIZE_KEY);
+                            if (storedMtime != null && storedSize != null
+                                    && storedMtime == currentMtime && storedSize == currentSize) {
+                                FileProcessingTask task = new FileProcessingTask(relativePath, true, false, null, List.of(), null, existing.size());
+                                int c = completedCount.incrementAndGet();
+                                listener.onFileProcessed(c, totalFiles, relativePath, false);
+                                return task;
+                            }
+                        }
+
                         String hash;
                         try {
                             hash = FastFileHasher.hashFile(file);
@@ -213,9 +250,23 @@ public final class WorkspaceEmbeddingIndex {
                             return null; // skip unreadable/binary files
                         }
 
-                        List<TextSegment> existing = existingBySource.getOrDefault(relativePath, List.of());
-                        if (!existing.isEmpty() && hash.equals(existing.get(0).metadata().getString(HASH_KEY))) {
-                            FileProcessingTask task = new FileProcessingTask(relativePath, true, false, null, List.of(), null, existing.size());
+                        if (!existing.isEmpty() && hash.equals(existing.get(0).embedded().metadata().getString(HASH_KEY))) {
+                            // Content is unchanged despite the mtime/size mismatch (e.g. a checkout or
+                            // save-without-edit rewrote the file without changing its bytes). Reuse the
+                            // existing embeddings as-is and just refresh the stored mtime/size, so the fast
+                            // path above catches this file next time instead of re-hashing it forever.
+                            List<TextSegment> refreshed = new ArrayList<>(existing.size());
+                            List<Embedding> reusedEmbeddings = new ArrayList<>(existing.size());
+                            for (EmbeddingMatch<TextSegment> match : existing) {
+                                TextSegment old = match.embedded();
+                                Metadata refreshedMetadata = old.metadata().copy()
+                                        .put(MTIME_KEY, currentMtime)
+                                        .put(SIZE_KEY, currentSize);
+                                refreshed.add(TextSegment.from(old.text(), refreshedMetadata));
+                                reusedEmbeddings.add(match.embedding());
+                            }
+                            FileProcessingTask task = new FileProcessingTask(relativePath, true, false, null,
+                                    refreshed, Response.from(reusedEmbeddings), existing.size());
                             int c = completedCount.incrementAndGet();
                             listener.onFileProcessed(c, totalFiles, relativePath, false);
                             return task;
@@ -230,7 +281,7 @@ public final class WorkspaceEmbeddingIndex {
                             return null; // skip unreadable/binary files
                         }
 
-                        List<TextSegment> segments = chunkFile(relativePath, lines, hash);
+                        List<TextSegment> segments = chunkFile(relativePath, lines, hash, currentMtime, currentSize);
                         if (segments.isEmpty()) {
                             FileProcessingTask task = new FileProcessingTask(relativePath, false, false, null, List.of(), null, 0);
                             int c = completedCount.incrementAndGet();
@@ -281,7 +332,16 @@ public final class WorkspaceEmbeddingIndex {
                         failedFiles.add(taskResult.relativePath() + ": " + taskResult.failureMessage());
                     } else if (taskResult.unchanged()) {
                         filesUnchanged++;
-                        totalChunks += taskResult.existingChunkCount();
+                        if (taskResult.segments().isEmpty()) {
+                            totalChunks += taskResult.existingChunkCount();
+                        } else {
+                            // Content unchanged, but mtime/size metadata needs refreshing (see the mtime
+                            // short-circuit above) -- reuse the already-known embeddings, no new embedding
+                            // call was made for this file.
+                            store.removeAll(sourceFilter(taskResult.relativePath()));
+                            store.addAll(taskResult.embeddingResponse().content(), taskResult.segments());
+                            totalChunks += taskResult.segments().size();
+                        }
                     } else if (!taskResult.segments().isEmpty()) {
                         store.removeAll(sourceFilter(taskResult.relativePath()));
                         store.addAll(taskResult.embeddingResponse().content(), taskResult.segments());
@@ -521,7 +581,7 @@ public final class WorkspaceEmbeddingIndex {
         return workspaceRoot.relativize(file).toString().replace('\\', '/');
     }
 
-    private List<TextSegment> chunkFile(String relativePath, List<String> lines, String hash) {
+    private List<TextSegment> chunkFile(String relativePath, List<String> lines, String hash, long mtimeMillis, long fileSize) {
         int window = config.chunkLines();
         int overlap = config.chunkOverlapLines();
         List<TextSegment> segments = new ArrayList<>();
@@ -534,7 +594,9 @@ public final class WorkspaceEmbeddingIndex {
                         SOURCE_KEY, relativePath,
                         HASH_KEY, hash,
                         START_LINE_KEY, start + 1,
-                        END_LINE_KEY, end));
+                        END_LINE_KEY, end,
+                        MTIME_KEY, mtimeMillis,
+                        SIZE_KEY, fileSize));
                 segments.add(TextSegment.from(text, metadata));
             }
             if (end == lines.size()) {
@@ -555,24 +617,11 @@ public final class WorkspaceEmbeddingIndex {
         return cached;
     }
 
-    /** Fetches every chunk for a given file's metadata without a real similarity search: a filter-only,
-     * zero-vector, {@code minScore=0} query returns every entry the filter admits regardless of score. */
-    private List<TextSegment> findBySource(ShardedEmbeddingStore store, String relativePath) {
-        return scanWithFilter(store, sourceFilter(relativePath));
-    }
-
-    private Set<String> allDistinctSources(ShardedEmbeddingStore store) {
-        Set<String> sources = new LinkedHashSet<>();
-        for (TextSegment segment : scanWithFilter(store, null)) {
-            String source = segment.metadata().getString(SOURCE_KEY);
-            if (source != null) {
-                sources.add(source);
-            }
-        }
-        return sources;
-    }
-
-    private List<TextSegment> scanWithFilter(ShardedEmbeddingStore store, Filter filter) {
+    /** Fetches every chunk (with its embedding) admitted by {@code filter} (or every chunk in the store,
+     * if {@code filter} is null) without a real similarity search: a zero-vector, {@code minScore=0} query
+     * returns every entry the filter admits regardless of score. Callers needing only metadata should still
+     * prefer calling this once and reusing the result over calling it again -- it costs O(store size). */
+    private List<EmbeddingMatch<TextSegment>> scanWithFilter(ShardedEmbeddingStore store, Filter filter) {
         if (store == null || store.isEmpty()) {
             return List.of();
         }
@@ -583,9 +632,7 @@ public final class WorkspaceEmbeddingIndex {
         if (filter != null) {
             builder.filter(filter);
         }
-        return store.search(builder.build()).matches().stream()
-                .map(dev.langchain4j.store.embedding.EmbeddingMatch::embedded)
-                .toList();
+        return store.search(builder.build()).matches();
     }
 
     private static Filter sourceFilter(String relativePath) {
