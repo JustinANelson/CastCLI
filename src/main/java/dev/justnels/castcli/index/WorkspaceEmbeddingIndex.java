@@ -63,6 +63,17 @@ public final class WorkspaceEmbeddingIndex {
             });
     private final AtomicBoolean backgroundRebuildInProgress = new AtomicBoolean(false);
 
+    /** Cached deserialization of {@link #indexFile}, keyed by its last-modified time, so a long-lived
+     * process (e.g. the MCP server) doesn't re-parse a potentially multi-megabyte JSON index on every
+     * search call. */
+    private volatile CachedStore cachedStore;
+
+    private static final long STALE_CHECK_MIN_INTERVAL_MS = 2000;
+    /** Throttles {@link #isStale()}, which walks the whole workspace; without this, every search call
+     * in quick succession (e.g. several agent tool calls in a row) repeats that walk for no benefit. */
+    private volatile long lastStaleCheckMillis = Long.MIN_VALUE;
+    private volatile boolean lastStaleResult;
+
     public WorkspaceEmbeddingIndex(EmbeddingConfig config, Path workspaceRoot, EmbeddingModel embeddingModel) {
         this.config = config;
         this.workspaceRoot = workspaceRoot.toAbsolutePath().normalize();
@@ -81,6 +92,8 @@ public final class WorkspaceEmbeddingIndex {
     public Path indexFile() {
         return indexFile;
     }
+
+    private record CachedStore(InMemoryEmbeddingStore<TextSegment> store, long mtimeMillis) { }
 
     private record FileProcessingTask(
             String relativePath, boolean unchanged, List<TextSegment> segments,
@@ -194,6 +207,7 @@ public final class WorkspaceEmbeddingIndex {
 
         Files.createDirectories(indexFile.getParent());
         store.serializeToFile(indexFile);
+        cachedStore = new CachedStore(store, Files.getLastModifiedTime(indexFile).toMillis());
 
         long duration = System.currentTimeMillis() - startTime;
         return new IndexReport(files.size(), filesEmbedded, filesUnchanged, removedSources.size(),
@@ -209,11 +223,7 @@ public final class WorkspaceEmbeddingIndex {
 
     /** Semantically searches the persisted index with an explicit minimum similarity score threshold. */
     public List<SearchHit> search(String query, int maxResults, double minScore) {
-        if (!Files.isRegularFile(indexFile)) {
-            throw new IllegalStateException(
-                    "No semantic index found at " + indexFile + ". Run 'llm-harness index' first.");
-        }
-        InMemoryEmbeddingStore<TextSegment> store = InMemoryEmbeddingStore.fromFile(indexFile);
+        InMemoryEmbeddingStore<TextSegment> store = loadStoreCached();
         Embedding queryEmbedding = embeddingModel.embed(query).content();
 
         EmbeddingSearchRequest request = EmbeddingSearchRequest.builder()
@@ -273,6 +283,17 @@ public final class WorkspaceEmbeddingIndex {
      * without reading file contents. This is the same file set {@link #rebuild()} would scan, but skipping
      * the read+hash+embed cost makes it safe to call on every search. */
     private boolean isStale() {
+        long now = System.currentTimeMillis();
+        if (now - lastStaleCheckMillis < STALE_CHECK_MIN_INTERVAL_MS) {
+            return lastStaleResult;
+        }
+        boolean stale = computeStale();
+        lastStaleCheckMillis = now;
+        lastStaleResult = stale;
+        return stale;
+    }
+
+    private boolean computeStale() {
         try {
             long indexModified = Files.getLastModifiedTime(indexFile).toMillis();
             for (Path file : collectIncludedFiles()) {
@@ -286,6 +307,28 @@ public final class WorkspaceEmbeddingIndex {
         }
     }
 
+
+    /** Loads the persisted store, reusing the in-memory cache when {@link #indexFile}'s last-modified
+     * time hasn't changed since it was last read or written by this instance. */
+    private InMemoryEmbeddingStore<TextSegment> loadStoreCached() {
+        if (!Files.isRegularFile(indexFile)) {
+            throw new IllegalStateException(
+                    "No semantic index found at " + indexFile + ". Run 'llm-harness index' first.");
+        }
+        long mtime;
+        try {
+            mtime = Files.getLastModifiedTime(indexFile).toMillis();
+        } catch (IOException e) {
+            throw new IllegalStateException("Failed to read semantic index at " + indexFile, e);
+        }
+        CachedStore cached = cachedStore;
+        if (cached != null && cached.mtimeMillis() == mtime) {
+            return cached.store();
+        }
+        InMemoryEmbeddingStore<TextSegment> loaded = InMemoryEmbeddingStore.fromFile(indexFile);
+        cachedStore = new CachedStore(loaded, mtime);
+        return loaded;
+    }
 
     private List<Path> collectIncludedFiles() throws IOException {
         IndexerIgnoreConfig ignoreConfig = IndexerIgnoreConfig.load(workspaceRoot);
@@ -421,8 +464,6 @@ public final class WorkspaceEmbeddingIndex {
         return value == null ? 0 : value;
     }
 
-    private static final int MAX_EMBEDDING_BATCH_SIZE = 64;
-
     private Response<List<Embedding>> embedSegmentsInBatches(List<TextSegment> segments) {
         if (segments.isEmpty()) {
             return Response.from(List.of());
@@ -431,9 +472,10 @@ public final class WorkspaceEmbeddingIndex {
         List<Embedding> allEmbeddings = new ArrayList<>(segments.size());
         int totalInputTokens = 0;
         boolean hasTokenUsage = false;
+        int batchSize = Math.max(1, config.maxBatchSize());
 
-        for (int i = 0; i < segments.size(); i += MAX_EMBEDDING_BATCH_SIZE) {
-            List<TextSegment> batch = segments.subList(i, Math.min(i + MAX_EMBEDDING_BATCH_SIZE, segments.size()));
+        for (int i = 0; i < segments.size(); i += batchSize) {
+            List<TextSegment> batch = segments.subList(i, Math.min(i + batchSize, segments.size()));
             Response<List<Embedding>> batchResponse = embedSegmentsWithResilience(batch);
             allEmbeddings.addAll(batchResponse.content());
             if (batchResponse.tokenUsage() != null && batchResponse.tokenUsage().inputTokenCount() != null) {

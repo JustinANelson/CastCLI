@@ -13,6 +13,7 @@ public class EmbeddingModelFactory {
                 .apiKey(config.resolvedApiKey())
                 .modelName(config.modelName())
                 .timeout(Duration.ofSeconds(config.timeoutSeconds()))
+                .maxRetries(config.maxRetries())
                 .build();
     }
 }

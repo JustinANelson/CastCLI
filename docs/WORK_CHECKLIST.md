@@ -2,34 +2,36 @@
 
 ## Current objective
 
-Implement Context Egress Firewall & Cloud Egress Manifests (R-102): privacy classification (`PUBLIC`, `INTERNAL`, `CONFIDENTIAL`, `RESTRICTED`), secret redaction, path deny-globs, and cloud egress manifests.
+Fix `cast-cli index` HTTP timeout exceptions when indexing repositories by making embedding batch sizes, HTTP retries, and timeout parameters configurable with resilient defaults.
 
 ## Checklist
 
-- [x] Create `ContextClassification` enum in `dev.justnels.castcli.security`.
-- [x] Create `ContextFirewall` evaluating classification, secret redaction, deny-globs, and egress limits.
-- [x] Create `EgressManifest` representing cloud egress records stored in `.cast/egress/`.
-- [x] Integrate `ContextFirewall` in `HarnessOrchestrator` before `FRONTIER_CLOUD` model dispatch.
-- [x] Create unit tests in `ContextFirewallTest.java`.
-- [x] Verify implementation with `.\gradlew.bat test`, `.\gradlew.bat check`, `git diff --check`, and `mcp-usage` audit.
+- [x] Update `EmbeddingConfig.java` to add `maxBatchSize` (default 16) and `maxRetries` (default 1) with backward-compatible constructors.
+- [x] Update `EmbeddingModelFactory.java` to pass `maxRetries` to `OpenAiEmbeddingModel`.
+- [x] Update `WorkspaceEmbeddingIndex.java` to use `config.maxBatchSize()` instead of hardcoded 64.
+- [x] Update `ConfigValidator.java` to validate `maxBatchSize` and `maxRetries`.
+- [x] Update and add unit tests in `EmbeddingConfigTest.java` and `WorkspaceEmbeddingIndexTest.java`.
+- [x] Verify implementation with `.\gradlew.bat test`, `.\gradlew.bat check`, `git diff --check`, and MCP delegation audit.
 
 ## Blockers and open decisions
 
-None. Feature implementations complete and verified.
+None. Feature implementation and verification complete.
 
 ## Next action
 
-Summary reported to user. Ready for next recommendations (R-103 AST Token Compiler / R-201 Profiler).
+Summary reported to user.
 
 ## Relevant paths
 
-- `src/main/java/dev/justnels/castcli/security/`
-- `src/main/java/dev/justnels/castcli/orchestration/HarnessOrchestrator.java`
-- `src/test/java/dev/justnels/castcli/security/`
+- `src/main/java/dev/justnels/castcli/config/EmbeddingConfig.java`
+- `src/main/java/dev/justnels/castcli/config/ConfigValidator.java`
+- `src/main/java/dev/justnels/castcli/model/EmbeddingModelFactory.java`
+- `src/main/java/dev/justnels/castcli/index/WorkspaceEmbeddingIndex.java`
+- `src/test/java/dev/justnels/castcli/`
 
 ## Verification status
 
-- `.\gradlew.bat test`: passed (all 314 unit tests passed).
-- `.\gradlew.bat check`: passed (Checkstyle & JaCoCo 70%+ coverage verified).
+- `.\gradlew.bat test`: passed.
+- `.\gradlew.bat check`: passed.
 - `git diff --check`: passed.
-- `mcp-usage` delegation audit: passed.
+- `mcp-usage` audit: passed.

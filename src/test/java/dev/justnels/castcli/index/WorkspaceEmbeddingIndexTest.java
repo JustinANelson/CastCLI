@@ -161,6 +161,29 @@ class WorkspaceEmbeddingIndexTest {
         assertThat(embeddingModel.calls).isNotEmpty();
     }
 
+    @Test
+    void rebuildObeysConfiguredMaxBatchSize() throws IOException {
+        int customBatchSize = 4;
+        EmbeddingConfig batchConfig = new EmbeddingConfig(
+                true, "http://fake/v1/", "fake-embed", null, 30, 2, 0, 300_000,
+                null, null, null, 0.0, 2, customBatchSize, 1);
+
+        StringBuilder content = new StringBuilder();
+        for (int l = 0; l < 20; l++) {
+            content.append("Line ").append(l).append(" in large test file\n");
+        }
+        Files.writeString(workspace.resolve("LargeFile.java"), content.toString());
+
+        FakeEmbeddingModel customModel = new FakeEmbeddingModel();
+        WorkspaceEmbeddingIndex index = new WorkspaceEmbeddingIndex(batchConfig, workspace, customModel);
+        index.rebuild();
+
+        assertThat(customModel.calls).isNotEmpty();
+        for (List<String> batch : customModel.calls) {
+            assertThat(batch.size()).isLessThanOrEqualTo(customBatchSize);
+        }
+    }
+
     /** Deterministic bag-of-words embedding model: hashes each word into one of a fixed number of
      * buckets, so texts sharing vocabulary end up with similar vectors, without any network calls. */
     private static final class FakeEmbeddingModel implements EmbeddingModel {

@@ -116,6 +116,16 @@ public final class ConfigValidator {
             }
         }
 
+        // 7. Embeddings Settings Check
+        if (config.embeddings() != null && config.embeddings().enabled()) {
+            if (config.embeddings().maxBatchSize() <= 0) {
+                errors.add("Embeddings maxBatchSize must be greater than zero");
+            }
+            if (config.embeddings().maxRetries() < 0) {
+                errors.add("Embeddings maxRetries must not be negative");
+            }
+        }
+
         boolean valid = errors.isEmpty();
         return new ValidationResult(valid, errors, warnings);
     }
