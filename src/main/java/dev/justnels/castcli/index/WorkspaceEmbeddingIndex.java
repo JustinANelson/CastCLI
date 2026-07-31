@@ -37,6 +37,8 @@ import java.util.concurrent.Future;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Builds and queries a persisted semantic (embedding-based) index of workspace source files, so agents can
@@ -111,6 +113,12 @@ public final class WorkspaceEmbeddingIndex {
 
         /** Called after each file finishes processing (embedded, unchanged, or failed). */
         default void onFileProcessed(int completed, int total, String relativePath, boolean failed) { }
+
+        /** Called periodically (independent of file starts/completions) while a file's embedding call is
+         * in flight, so a caller can render something visibly changing (a spinner, elapsed time) even when
+         * no file has actually finished yet -- otherwise a single slow embedding call looks identical to a
+         * hang. {@code elapsedMillis} is how long the current file has been embedding. */
+        default void onHeartbeat(int completed, int total, String relativePath, long elapsedMillis) { }
     }
 
     public Path indexFile() {
@@ -163,105 +171,131 @@ public final class WorkspaceEmbeddingIndex {
         List<String> failedFiles = new ArrayList<>();
 
         Semaphore semaphore = new Semaphore(config.maxConcurrency());
-        AtomicInteger startedCount = new AtomicInteger(0);
         AtomicInteger completedCount = new AtomicInteger(0);
+        AtomicReference<String> activeFile = new AtomicReference<>("");
+        AtomicLong activeFileStartNanos = new AtomicLong(System.nanoTime());
+        AtomicBoolean indexingActive = new AtomicBoolean(true);
         int totalFiles = files.size();
 
-        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
-            List<Future<FileProcessingTask>> futures = new ArrayList<>();
-
-            for (Path file : files) {
-                futures.add(executor.submit(() -> {
-                    String relativePath = toRelativePath(file);
-                    currentSources.add(relativePath);
-                    int st = startedCount.incrementAndGet();
-                    listener.onFileStarted(st, totalFiles, relativePath);
-
-                    String hash;
-                    try {
-                        hash = FastFileHasher.hashFile(file);
-                    } catch (IOException | RuntimeException notText) {
-                        int c = completedCount.incrementAndGet();
-                        listener.onFileProcessed(c, totalFiles, relativePath, false);
-                        return null; // skip unreadable/binary files
-                    }
-
-                    List<TextSegment> existing = existingBySource.getOrDefault(relativePath, List.of());
-                    if (!existing.isEmpty() && hash.equals(existing.get(0).metadata().getString(HASH_KEY))) {
-                        FileProcessingTask task = new FileProcessingTask(relativePath, true, false, null, List.of(), null, existing.size());
-                        int c = completedCount.incrementAndGet();
-                        listener.onFileProcessed(c, totalFiles, relativePath, false);
-                        return task;
-                    }
-
-                    List<String> lines;
-                    try {
-                        lines = Files.readAllLines(file, StandardCharsets.UTF_8);
-                    } catch (IOException | RuntimeException notText) {
-                        int c = completedCount.incrementAndGet();
-                        listener.onFileProcessed(c, totalFiles, relativePath, false);
-                        return null; // skip unreadable/binary files
-                    }
-
-                    List<TextSegment> segments = chunkFile(relativePath, lines, hash);
-                    if (segments.isEmpty()) {
-                        FileProcessingTask task = new FileProcessingTask(relativePath, false, false, null, List.of(), null, 0);
-                        int c = completedCount.incrementAndGet();
-                        listener.onFileProcessed(c, totalFiles, relativePath, false);
-                        return task;
-                    }
-
-                    semaphore.acquire();
-                    try {
-                        Response<List<Embedding>> response = embedSegmentsInBatches(segments);
-                        FileProcessingTask task = new FileProcessingTask(relativePath, false, false, null, segments, response, 0);
-                        int c = completedCount.incrementAndGet();
-                        listener.onFileProcessed(c, totalFiles, relativePath, false);
-                        return task;
-                    } catch (RuntimeException embeddingFailure) {
-                        FileProcessingTask task = new FileProcessingTask(relativePath, false, true,
-                                embeddingFailure.getClass().getSimpleName() + ": " + embeddingFailure.getMessage(),
-                                List.of(), null, 0);
-                        int c = completedCount.incrementAndGet();
-                        listener.onFileProcessed(c, totalFiles, relativePath, true);
-                        return task;
-                    } finally {
-                        semaphore.release();
-                    }
-                }));
-            }
-
-            for (Future<FileProcessingTask> future : futures) {
-                FileProcessingTask taskResult;
+        Thread tickerThread = Thread.ofVirtual().name("index-progress-ticker").start(() -> {
+            while (indexingActive.get()) {
                 try {
-                    taskResult = future.get();
+                    Thread.sleep(500);
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
-                    throw new IOException("Indexing interrupted", e);
-                } catch (ExecutionException e) {
-                    failedFiles.add("(unknown file): " + e.getCause());
-                    continue;
+                    break;
                 }
-
-                if (taskResult == null) {
-                    continue;
-                }
-
-                if (taskResult.failed()) {
-                    failedFiles.add(taskResult.relativePath() + ": " + taskResult.failureMessage());
-                } else if (taskResult.unchanged()) {
-                    filesUnchanged++;
-                    totalChunks += taskResult.existingChunkCount();
-                } else if (!taskResult.segments().isEmpty()) {
-                    store.removeAll(sourceFilter(taskResult.relativePath()));
-                    store.addAll(taskResult.embeddingResponse().content(), taskResult.segments());
-                    filesEmbedded++;
-                    totalChunks += taskResult.segments().size();
-                    if (taskResult.embeddingResponse().tokenUsage() != null) {
-                        inputTokensUsed += taskResult.embeddingResponse().tokenUsage().inputTokenCount();
+                if (indexingActive.get()) {
+                    String current = activeFile.get();
+                    if (!current.isEmpty()) {
+                        long elapsedMillis = (System.nanoTime() - activeFileStartNanos.get()) / 1_000_000L;
+                        listener.onHeartbeat(completedCount.get(), totalFiles, current, elapsedMillis);
                     }
                 }
             }
+        });
+
+        try {
+            try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
+                List<Future<FileProcessingTask>> futures = new ArrayList<>();
+
+                for (Path file : files) {
+                    futures.add(executor.submit(() -> {
+                        String relativePath = toRelativePath(file);
+                        currentSources.add(relativePath);
+
+                        String hash;
+                        try {
+                            hash = FastFileHasher.hashFile(file);
+                        } catch (IOException | RuntimeException notText) {
+                            int c = completedCount.incrementAndGet();
+                            listener.onFileProcessed(c, totalFiles, relativePath, false);
+                            return null; // skip unreadable/binary files
+                        }
+
+                        List<TextSegment> existing = existingBySource.getOrDefault(relativePath, List.of());
+                        if (!existing.isEmpty() && hash.equals(existing.get(0).metadata().getString(HASH_KEY))) {
+                            FileProcessingTask task = new FileProcessingTask(relativePath, true, false, null, List.of(), null, existing.size());
+                            int c = completedCount.incrementAndGet();
+                            listener.onFileProcessed(c, totalFiles, relativePath, false);
+                            return task;
+                        }
+
+                        List<String> lines;
+                        try {
+                            lines = Files.readAllLines(file, StandardCharsets.UTF_8);
+                        } catch (IOException | RuntimeException notText) {
+                            int c = completedCount.incrementAndGet();
+                            listener.onFileProcessed(c, totalFiles, relativePath, false);
+                            return null; // skip unreadable/binary files
+                        }
+
+                        List<TextSegment> segments = chunkFile(relativePath, lines, hash);
+                        if (segments.isEmpty()) {
+                            FileProcessingTask task = new FileProcessingTask(relativePath, false, false, null, List.of(), null, 0);
+                            int c = completedCount.incrementAndGet();
+                            listener.onFileProcessed(c, totalFiles, relativePath, false);
+                            return task;
+                        }
+
+                        semaphore.acquire();
+                        try {
+                            activeFile.set(relativePath);
+                            activeFileStartNanos.set(System.nanoTime());
+                            listener.onFileStarted(completedCount.get(), totalFiles, relativePath);
+                            Response<List<Embedding>> response = embedSegmentsInBatches(segments);
+                            FileProcessingTask task = new FileProcessingTask(relativePath, false, false, null, segments, response, 0);
+                            int c = completedCount.incrementAndGet();
+                            listener.onFileProcessed(c, totalFiles, relativePath, false);
+                            return task;
+                        } catch (RuntimeException embeddingFailure) {
+                            FileProcessingTask task = new FileProcessingTask(relativePath, false, true,
+                                    embeddingFailure.getClass().getSimpleName() + ": " + embeddingFailure.getMessage(),
+                                    List.of(), null, 0);
+                            int c = completedCount.incrementAndGet();
+                            listener.onFileProcessed(c, totalFiles, relativePath, true);
+                            return task;
+                        } finally {
+                            semaphore.release();
+                        }
+                    }));
+                }
+
+                for (Future<FileProcessingTask> future : futures) {
+                    FileProcessingTask taskResult;
+                    try {
+                        taskResult = future.get();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new IOException("Indexing interrupted", e);
+                    } catch (ExecutionException e) {
+                        failedFiles.add("(unknown file): " + e.getCause());
+                        continue;
+                    }
+
+                    if (taskResult == null) {
+                        continue;
+                    }
+
+                    if (taskResult.failed()) {
+                        failedFiles.add(taskResult.relativePath() + ": " + taskResult.failureMessage());
+                    } else if (taskResult.unchanged()) {
+                        filesUnchanged++;
+                        totalChunks += taskResult.existingChunkCount();
+                    } else if (!taskResult.segments().isEmpty()) {
+                        store.removeAll(sourceFilter(taskResult.relativePath()));
+                        store.addAll(taskResult.embeddingResponse().content(), taskResult.segments());
+                        filesEmbedded++;
+                        totalChunks += taskResult.segments().size();
+                        if (taskResult.embeddingResponse().tokenUsage() != null) {
+                            inputTokensUsed += taskResult.embeddingResponse().tokenUsage().inputTokenCount();
+                        }
+                    }
+                }
+            }
+        } finally {
+            indexingActive.set(false);
+            tickerThread.interrupt();
         }
 
         Set<String> removedSources = new LinkedHashSet<>(previousSources);

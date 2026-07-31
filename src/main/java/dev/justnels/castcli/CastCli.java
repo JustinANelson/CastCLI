@@ -905,12 +905,18 @@ public final class CastCli implements Runnable {
 
         /** Prints indexing progress to stderr so a long-running index build on a large codebase (or a
          * slow/cold local embedding backend) doesn't look like it has hung. Shows scan status immediately,
-         * a visual progress bar, percentage, and current file name as files are processed. */
+         * a visual progress bar, percentage, and current file name as files are processed. Supports both
+         * carriage-return overwrites for interactive TTYs and real-time line-by-line output for piped/non-TTY
+         * consoles (such as Gradle daemon processes). A spinner + elapsed-time suffix (driven by
+         * {@link #onHeartbeat}) keeps changing every tick even while a single file's embedding call is
+         * still in flight, so the display doesn't look identical to a genuine hang. */
         private static final class IndexProgressPrinter implements WorkspaceEmbeddingIndex.ProgressListener {
             private static final int LARGE_REPO_FILE_WARNING_THRESHOLD = 300;
-            private static final long PROGRESS_PRINT_INTERVAL_NANOS = 100_000_000L;
+            private static final long PROGRESS_PRINT_INTERVAL_NANOS = 200_000_000L;
+            private static final char[] SPINNER_FRAMES = {'|', '/', '-', '\\'};
 
             private volatile long lastPrintNanos = Long.MIN_VALUE;
+            private int spinnerFrame = 0;
 
             @Override
             public synchronized void onScanStarted() {
@@ -936,7 +942,7 @@ public final class CastCli implements Runnable {
                 long now = System.nanoTime();
                 if (now - lastPrintNanos >= PROGRESS_PRINT_INTERVAL_NANOS) {
                     lastPrintNanos = now;
-                    renderProgressBar(Math.max(0, started - 1), total, relativePath);
+                    renderProgressBar(Math.max(0, started - 1), total, relativePath, "");
                 }
             }
 
@@ -950,21 +956,38 @@ public final class CastCli implements Runnable {
                 long now = System.nanoTime();
                 if (completed == total || now - lastPrintNanos >= PROGRESS_PRINT_INTERVAL_NANOS) {
                     lastPrintNanos = now;
-                    renderProgressBar(completed, total, relativePath);
+                    renderProgressBar(completed, total, relativePath, "");
                 }
             }
 
-            private void renderProgressBar(int currentCount, int total, String relativePath) {
+            @Override
+            public synchronized void onHeartbeat(int completed, int total, String relativePath, long elapsedMillis) {
+                long now = System.nanoTime();
+                if (now - lastPrintNanos < PROGRESS_PRINT_INTERVAL_NANOS) {
+                    return;
+                }
+                lastPrintNanos = now;
+                char spinner = SPINNER_FRAMES[spinnerFrame = (spinnerFrame + 1) % SPINNER_FRAMES.length];
+                renderProgressBar(completed, total, relativePath, " " + spinner + " (" + (elapsedMillis / 1000) + "s)");
+            }
+
+            private void renderProgressBar(int currentCount, int total, String relativePath, String suffix) {
                 int percent = total > 0 ? (currentCount * 100) / total : 100;
                 int barWidth = 20;
                 int filled = total > 0 ? (currentCount * barWidth) / total : barWidth;
                 String bar = "=".repeat(Math.max(0, filled)) + (filled < barWidth ? ">" : "") + " ".repeat(Math.max(0, barWidth - filled - (filled < barWidth ? 1 : 0)));
                 String fileSnippet = relativePath.length() > 40 ? "..." + relativePath.substring(relativePath.length() - 37) : relativePath;
 
-                System.err.printf("\rIndexing workspace: [%-20s] %3d%% (%d/%d) | %-40s",
-                        bar, percent, currentCount, total, fileSnippet);
-                if (currentCount == total) {
-                    System.err.println();
+                boolean isInteractive = System.console() != null && !"line".equalsIgnoreCase(System.getProperty("castcli.progress.format"));
+                if (isInteractive) {
+                    System.err.printf("\rIndexing workspace: [%-20s] %3d%% (%d/%d) | %-40s%-12s",
+                            bar, percent, currentCount, total, fileSnippet, suffix);
+                    if (currentCount == total && suffix.isEmpty()) {
+                        System.err.println();
+                    }
+                } else {
+                    System.err.printf("Indexing workspace: [%-20s] %3d%% (%d/%d) | %-40s%s%n",
+                            bar, percent, currentCount, total, fileSnippet, suffix);
                 }
                 System.err.flush();
             }
