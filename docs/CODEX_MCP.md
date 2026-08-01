@@ -39,9 +39,12 @@ Structured delegations reserve 30% of `routing.maxContextChars` for model output
 retrieving workspace content. File reads stop at the partition budget; common generated roots (`build`,
 `.gradle`, `out`, `target`, and `node_modules`) are skipped. Search lines are capped, inputs are packed into at most four bounded partitions,
 and multi-part summaries use one bounded reduction pass. Results are capped at 4,000 characters. Each MCP
-delegation has a total deadline of at most 60 seconds and one local-provider attempt; a failure returns
-`castcli/fallbackRecommended=true`. Identical failed requests are suppressed for five minutes and return
-`castcli/retrySuppressed=true`, telling the caller to continue directly instead of repeating slow work.
+delegation has a total deadline (`reliability.mcpDelegationDeadlineSeconds`, default 60 seconds) and one
+local-provider attempt; a failure returns `castcli/fallbackRecommended=true`. If `mcp-usage` shows
+`timeouts`/`fallbacks` consistently for `map_change_impact`, `generate_tests`, or `summarize_files` on a
+large repo or with a slower local model, raise `mcpDelegationDeadlineSeconds` in the harness config.
+Identical failed requests are suppressed for five minutes and return `castcli/retrySuppressed=true`,
+telling the caller to continue directly instead of repeating slow work.
 
 For automation:
 

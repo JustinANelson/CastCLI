@@ -97,7 +97,8 @@
     "fallbackOrder": {},
     "maxCostUsdPerTask": 1.0,
     "maxCumulativeCostUsd": 20.0,
-    "maxRequestsPerMinute": 30
+    "maxRequestsPerMinute": 30,
+    "mcpDelegationDeadlineSeconds": 60
   },
   "observability": {
     "enabled": false,

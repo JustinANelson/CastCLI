@@ -174,9 +174,14 @@ can validate that caching saves work without allowing unbounded growth.
 
 The MCP delegation compiler budgets context before dispatch: it caps literal-search lines, partitions large
 files/logs/diffs into at most four prompt packets, reserves output headroom, and performs a bounded reduce pass.
-MCP-local reliability uses one strict provider attempt within a 60-second total deadline. Failed request hashes
-are retained briefly to suppress unchanged retries and signal direct frontier fallback. Usage summaries expose
-per-tool p50/p95 latency, timeouts, context rejections, and fallback counts.
+MCP-local reliability uses one strict provider attempt within a total deadline, configured by
+`reliability.mcpDelegationDeadlineSeconds` (default 60s). Multi-partition calls (`summarize_files`,
+`generate_tests`, etc.) split this deadline evenly across each partition round-trip plus the final reduce
+pass, so one slow partition can't starve the rest of their share. Raise this value for larger repos or
+slower/larger local models where the 60s default causes consistent timeouts and fallbacks (visible as
+`timeouts` and `fallbacks` counts per tool in `mcp-usage`). Failed request hashes are retained briefly to
+suppress unchanged retries and signal direct frontier fallback. Usage summaries expose per-tool p50/p95
+latency, timeouts, context rejections, and fallback counts.
 
 ## Extension points
 

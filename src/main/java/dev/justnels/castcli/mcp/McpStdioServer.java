@@ -58,7 +58,6 @@ public final class McpStdioServer {
     private static final List<String> SUPPORTED_PROTOCOL_VERSIONS = List.of(
             "2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05");
     private static final long FAILED_REQUEST_TTL_MILLIS = TimeUnit.MINUTES.toMillis(5);
-    private static final int MAX_MCP_DELEGATION_SECONDS = 60;
 
     private final ObjectMapper mapper = new ObjectMapper();
     private final Map<String, McpTool> tools = new LinkedHashMap<>();
@@ -363,8 +362,7 @@ public final class McpStdioServer {
         registerListModels(cheapOnlyConfig);
         registerStructuredDelegationTools(new ReadOnlyDelegationTools(
                 cheapOrchestrator, workspaceTools, telemetry, config.routing().maxContextChars(),
-                TimeUnit.SECONDS.toMillis(Math.min(MAX_MCP_DELEGATION_SECONDS,
-                        config.reliability().requestDeadlineSeconds())),
+                TimeUnit.SECONDS.toMillis(config.reliability().mcpDelegationDeadlineSeconds()),
                 preferredTier(cheapOnlyConfig, ModelTier.SMALL_LOCAL),
                 preferredTier(cheapOnlyConfig, ModelTier.LARGE_LOCAL)));
         registerTool("read_workspace_file", "Reads a UTF-8 text file inside the configured workspace.",
@@ -426,10 +424,10 @@ public final class McpStdioServer {
         ReliabilityConfig mcpReliability = new ReliabilityConfig(
                 1, reliability.initialBackoffMillis(), reliability.maxBackoffMillis(),
                 reliability.failureThreshold(), reliability.cooldownSeconds(),
-                Math.min(MAX_MCP_DELEGATION_SECONDS, reliability.requestDeadlineSeconds()),
+                reliability.mcpDelegationDeadlineSeconds(),
                 reliability.maxConcurrentRequests(), reliability.fallbackOrder(),
                 reliability.maxCostUsdPerTask(), reliability.maxCumulativeCostUsd(),
-                reliability.maxRequestsPerMinute());
+                reliability.maxRequestsPerMinute(), reliability.mcpDelegationDeadlineSeconds());
         return new HarnessConfig(cheapProviders, config.routing(), readOnlyTools, config.mcpServers(),
                 config.embeddings(), config.memory(), mcpReliability, config.observability(), config.mcpAudit());
     }

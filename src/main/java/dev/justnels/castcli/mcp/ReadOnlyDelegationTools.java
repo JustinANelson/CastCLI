@@ -159,22 +159,27 @@ final class ReadOnlyDelegationTools {
 
     private McpTool.ExecutionResult delegateSections(String instructions, List<String> sections,
                                                        Workload workload) throws Exception {
-        long deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(deadlineMillis);
         String boundedInstructions = boundedText(instructions, Math.max(256, promptBudgetChars / 3));
         List<String> chunks = packSections(sections, promptBudgetChars - boundedInstructions.length() - 128);
         if (chunks.isEmpty()) chunks = List.of("[No context supplied]");
         if (chunks.size() == 1) {
+            long deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(deadlineMillis);
             String prompt = boundedInstructions + "\nContext:\n" + chunks.getFirst();
             Delegated delegated = runPrompt(prompt, workload, deadlineNanos);
             return executionResult(delegated.outcome().answer(), List.of(delegated));
         }
 
+        // Each round trip (one per partition, plus the reducer) gets its own slice of the total
+        // deadline rather than sharing one clock: otherwise a slow first partition starves the
+        // remaining partitions and the reducer of any time at all.
+        long perCallNanos = TimeUnit.MILLISECONDS.toNanos(deadlineMillis) / (chunks.size() + 1);
         List<Delegated> delegations = new ArrayList<>();
         List<String> partials = new ArrayList<>();
         for (int index = 0; index < chunks.size(); index++) {
             String prompt = boundedInstructions + "\nThis is partition " + (index + 1) + " of " + chunks.size()
                     + ". Return only findings supported by this partition.\nContext:\n" + chunks.get(index);
-            Delegated delegated = runPrompt(boundedText(prompt, promptBudgetChars), workload, deadlineNanos);
+            long callDeadlineNanos = System.nanoTime() + perCallNanos;
+            Delegated delegated = runPrompt(boundedText(prompt, promptBudgetChars), workload, callDeadlineNanos);
             delegations.add(delegated);
             partials.add(boundedText(delegated.outcome().answer(), resultBudgetChars));
         }
@@ -187,7 +192,8 @@ final class ReadOnlyDelegationTools {
             reducer.append("\n--- PARTIAL ").append(index + 1).append(" ---\n")
                     .append(boundedText(partials.get(index), partialBudget));
         }
-        Delegated merged = runPrompt(boundedText(reducer.toString(), promptBudgetChars), workload, deadlineNanos);
+        long reducerDeadlineNanos = System.nanoTime() + perCallNanos;
+        Delegated merged = runPrompt(boundedText(reducer.toString(), promptBudgetChars), workload, reducerDeadlineNanos);
         delegations.add(merged);
         return executionResult(merged.outcome().answer(), delegations);
     }
