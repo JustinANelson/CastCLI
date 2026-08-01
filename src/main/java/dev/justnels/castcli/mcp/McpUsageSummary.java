@@ -24,17 +24,55 @@ public record McpUsageSummary(
         double estimatedFrontierEquivalentCostUsd,
         double estimatedCostAvoidedUsd,
         long averageDelegationDurationMs,
+        long totalPromptChars,
+        long totalResultChars,
         Map<String, Integer> callsByTool,
         Map<String, ToolPerformance> performanceByTool,
         Map<String, ProviderUsage> usageByProvider,
         List<String> callerModels) {
+
+    public McpUsageSummary(
+            int totalCalls, int successfulCalls, int askLocalCalls, int delegationCalls,
+            int successfulDelegations, long localInputTokens, long localOutputTokens,
+            double localEstimatedCostUsd, double estimatedFrontierEquivalentCostUsd,
+            double estimatedCostAvoidedUsd, long averageDelegationDurationMs,
+            Map<String, Integer> callsByTool, Map<String, ToolPerformance> performanceByTool,
+            Map<String, ProviderUsage> usageByProvider, List<String> callerModels) {
+        this(totalCalls, successfulCalls, askLocalCalls, delegationCalls, successfulDelegations,
+                localInputTokens, localOutputTokens, localEstimatedCostUsd,
+                estimatedFrontierEquivalentCostUsd, estimatedCostAvoidedUsd,
+                averageDelegationDurationMs, 0, 0, callsByTool, performanceByTool,
+                usageByProvider, callerModels);
+    }
+
+    public long mcpPayloadInputTokens() {
+        return totalPromptChars / 4;
+    }
+
+    public long mcpPayloadOutputTokens() {
+        return totalResultChars / 4;
+    }
+
+    public long mcpPayloadTotalTokens() {
+        return (totalPromptChars + totalResultChars) / 4;
+    }
 
     public record ProviderUsage(int calls, long inputTokens, long outputTokens, double estimatedCostUsd) {
         public long totalTokens() { return inputTokens + outputTokens; }
     }
 
     public record ToolPerformance(int calls, int successes, int timeouts, int contextRejections,
-                                  int fallbacks, long p50DurationMs, long p95DurationMs) { }
+                                  int fallbacks, long p50DurationMs, long p95DurationMs,
+                                  long avgResultChars) {
+        public ToolPerformance(int calls, int successes, int timeouts, int contextRejections,
+                               int fallbacks, long p50DurationMs, long p95DurationMs) {
+            this(calls, successes, timeouts, contextRejections, fallbacks, p50DurationMs, p95DurationMs, 0);
+        }
+
+        public long avgPayloadTokens() {
+            return avgResultChars / 4;
+        }
+    }
 
     public static McpUsageSummary summarize(List<McpUsageRecord> records, HarnessConfig config) {
         int successful = 0;
@@ -44,6 +82,8 @@ public record McpUsageSummary(
         long input = 0;
         long output = 0;
         long duration = 0;
+        long totalPromptChars = 0;
+        long totalResultChars = 0;
         double localCost = 0;
         double frontierEquivalentCost = 0;
         Map<String, Integer> tools = new TreeMap<>();
@@ -58,6 +98,8 @@ public record McpUsageSummary(
             tools.merge(record.toolName(), 1, Integer::sum);
             toolPerformance.computeIfAbsent(record.toolName(), ignored -> new MutableToolPerformance())
                     .add(record);
+            totalPromptChars += record.promptChars();
+            totalResultChars += record.resultChars();
             if (record.success()) successful++;
             if ("ask_local".equals(record.toolName())) askCalls++;
             if (record.delegationAttempted()) delegationCalls++;
@@ -83,7 +125,7 @@ public record McpUsageSummary(
         toolPerformance.forEach((name, usage) -> immutableToolPerformance.put(name, usage.freeze()));
         return new McpUsageSummary(records.size(), successful, askCalls, delegationCalls, delegations, input, output, localCost,
                 frontierEquivalentCost, Math.max(0, frontierEquivalentCost - localCost),
-                delegations == 0 ? 0 : duration / delegations, Map.copyOf(tools),
+                delegations == 0 ? 0 : duration / delegations, totalPromptChars, totalResultChars, Map.copyOf(tools),
                 Map.copyOf(immutableToolPerformance), Map.copyOf(immutableProviders), List.copyOf(callerModelsSeen));
     }
 
@@ -117,10 +159,12 @@ public record McpUsageSummary(
         int timeouts;
         int contextRejections;
         int fallbacks;
+        long totalResultChars;
         final java.util.ArrayList<Long> durations = new java.util.ArrayList<>();
 
         void add(McpUsageRecord record) {
             calls++;
+            totalResultChars += record.resultChars();
             if (record.success()) successes++;
             if ("timeout".equals(record.errorType())) timeouts++;
             if ("context_rejected".equals(record.errorType())) contextRejections++;
@@ -130,8 +174,9 @@ public record McpUsageSummary(
 
         ToolPerformance freeze() {
             durations.sort(Long::compareTo);
+            long avg = calls == 0 ? 0 : totalResultChars / calls;
             return new ToolPerformance(calls, successes, timeouts, contextRejections, fallbacks,
-                    percentile(0.50), percentile(0.95));
+                    percentile(0.50), percentile(0.95), avg);
         }
 
         private long percentile(double percentile) {

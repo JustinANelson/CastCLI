@@ -217,7 +217,7 @@ public final class McpStdioServer {
         }
         String name = params.path("name").asText("");
         // MCP spec reserves _meta at the params level as a standard extension point.
-        String callerModel = params.path("_meta").path("callerModel").asText(null);
+        String callerModel = extractCallerModel(params);
         String invocationId = UUID.randomUUID().toString();
         long startedEpochMs = System.currentTimeMillis();
         long startedNanos = System.nanoTime();
@@ -669,5 +669,32 @@ public final class McpStdioServer {
                     "generate_tests", "review_diff", "map_change_impact" -> true;
             default -> false;
         };
+    }
+
+    private static String extractCallerModel(JsonNode params) {
+        if (params != null) {
+            JsonNode meta = params.path("_meta");
+            if (meta.hasNonNull("callerModel")) {
+                return meta.path("callerModel").asText();
+            }
+            JsonNode args = params.path("arguments");
+            if (args != null && args.isObject()) {
+                if (args.path("_meta").hasNonNull("callerModel")) {
+                    return args.path("_meta").path("callerModel").asText();
+                }
+                if (args.hasNonNull("callerModel")) {
+                    return args.path("callerModel").asText();
+                }
+            }
+        }
+        String sysProp = System.getProperty("castcli.callerModel");
+        if (sysProp != null && !sysProp.isBlank()) {
+            return sysProp.trim();
+        }
+        String envVar = System.getenv("CASTCLI_CALLER_MODEL");
+        if (envVar != null && !envVar.isBlank()) {
+            return envVar.trim();
+        }
+        return null;
     }
 }

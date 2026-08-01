@@ -43,7 +43,7 @@ class McpUsageSummaryTest {
         assertThat(summary.estimatedCostAvoidedUsd()).isEqualTo(0.02375);
         assertThat(summary.callsByTool()).containsEntry("ask_local", 2);
         assertThat(summary.performanceByTool().get("ask_local"))
-                .isEqualTo(new McpUsageSummary.ToolPerformance(2, 1, 1, 0, 1, 30, 200));
+                .isEqualTo(new McpUsageSummary.ToolPerformance(2, 1, 1, 0, 1, 30, 200, 105));
         assertThat(summary.usageByProvider().get("local").calls()).isEqualTo(2);
         assertThat(summary.callerModels()).isEmpty(); // no callerModel on these records
     }

@@ -24,6 +24,7 @@ import dev.justnels.castcli.mcp.McpClientManager;
 import dev.justnels.castcli.mcp.McpStdioServer;
 import dev.justnels.castcli.mcp.McpUsageStore;
 import dev.justnels.castcli.mcp.McpUsageSummary;
+import dev.justnels.castcli.mcp.ReadOnlyDelegationTools;
 import dev.justnels.castcli.model.ChatModelFactory;
 import dev.justnels.castcli.model.EmbeddingModelFactory;
 import dev.justnels.castcli.orchestration.CostSavingsEstimator;
@@ -54,6 +55,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.Callable;
 
 import dev.justnels.castcli.routing.DryRunService;
@@ -68,7 +70,7 @@ import dev.justnels.castcli.observability.TraceExplanationService;
                 CastCli.Index.class, CastCli.RouteEval.class, CastCli.Memory.class, CastCli.SessionCmd.class, CastCli.Telemetry.class,
                 CastCli.McpUsage.class, CastCli.Doctor.class, CastCli.HealthServer.class, CastCli.Gateway.class,
                 CastCli.Completion.class, CastCli.ConfigCmd.class, CastCli.Init.class, CastCli.ConnectCmd.class,
-                CastCli.DryRunCmd.class, CastCli.ExplainCmd.class})
+                CastCli.DryRunCmd.class, CastCli.ExplainCmd.class, CastCli.PrCmd.class})
 public final class CastCli implements Runnable {
     @Option(names = "--config", description = "Path to CastCLI JSON configuration.",
             defaultValue = ".cast/harness.local.json")
@@ -446,21 +448,31 @@ public final class CastCli implements Runnable {
                     summary.totalCalls(), summary.successfulCalls(), summary.delegationCalls(),
                     summary.successfulDelegations(), summary.successfulDelegationRate() * 100,
                     summary.askLocalCalls());
-            System.out.printf("Local usage: %d tokens (%d in / %d out), est. $%.5f; average delegation: %d ms%n",
+            System.out.printf("MCP payload traffic: ~%d tokens (~%d in / ~%d out) exchanged with caller LLM%n",
+                    summary.mcpPayloadTotalTokens(), summary.mcpPayloadInputTokens(), summary.mcpPayloadOutputTokens());
+            System.out.printf("Local LLM usage: %d tokens (%d in / %d out), est. $%.5f; average delegation: %d ms%n",
                     summary.localTotalTokens(), summary.localInputTokens(), summary.localOutputTokens(),
                     summary.localEstimatedCostUsd(), summary.averageDelegationDurationMs());
             if (summary.estimatedFrontierEquivalentCostUsd() > 0) {
                 String refLabel = buildFrontierRefLabel(summary, estimator);
                 System.out.printf("Estimated frontier equivalent: $%.5f (ref: %s); estimated cost avoided after local cost: $%.5f%n",
                         summary.estimatedFrontierEquivalentCostUsd(), refLabel, summary.estimatedCostAvoidedUsd());
+            } else if (summary.successfulDelegations() == 0) {
+                String refLabel = buildFrontierRefLabel(summary, estimator);
+                if ("unknown".equals(refLabel)) {
+                    System.out.println("Estimated frontier equivalent: $0.00000 (0 delegations executed; configure an enabled FRONTIER_CLOUD reference provider, or pass _meta.callerModel in tool calls).");
+                } else {
+                    System.out.printf("Estimated frontier equivalent: $0.00000 (0 delegations executed; ref: %s)%n", refLabel);
+                }
             } else {
                 System.out.println("Estimated frontier equivalent: unavailable (configure an enabled FRONTIER_CLOUD reference provider, or pass _meta.callerModel in tool calls).");
             }
             if (!summary.callsByTool().isEmpty()) System.out.println("Calls by tool: " + summary.callsByTool());
             summary.performanceByTool().forEach((tool, performance) ->
-                    System.out.printf("  %-20s p50=%dms p95=%dms timeouts=%d context-rejected=%d fallbacks=%d%n",
+                    System.out.printf("  %-20s p50=%dms p95=%dms timeouts=%d context-rejected=%d fallbacks=%d avg_payload=~%dtk%n",
                             tool, performance.p50DurationMs(), performance.p95DurationMs(),
-                            performance.timeouts(), performance.contextRejections(), performance.fallbacks()));
+                            performance.timeouts(), performance.contextRejections(), performance.fallbacks(),
+                            performance.avgPayloadTokens()));
             summary.usageByProvider().forEach((provider, usage) ->
                     System.out.printf("  %-20s calls=%d tokens=%d (%d in / %d out) est. $%.5f%n",
                             provider, usage.calls(), usage.totalTokens(), usage.inputTokens(),
@@ -683,6 +695,174 @@ public final class CastCli implements Runnable {
                     }
                 }
                 return 0;
+            }
+        }
+    }
+
+    @Command(name = "pr", description = "Fetch, store, and review GitHub Pull Requests locally.", mixinStandardHelpOptions = true,
+            subcommands = {PrCmd.Fetch.class, PrCmd.Review.class, PrCmd.ListCmd.class})
+    static final class PrCmd implements Runnable {
+        @CommandLine.ParentCommand private CastCli parent;
+        @Override public void run() { CommandLine.usage(this, System.out); }
+
+        @Command(name = "fetch", description = "Fetch a GitHub PR diff and store it in .cast/prs/.")
+        static final class Fetch implements Callable<Integer> {
+            @CommandLine.ParentCommand private PrCmd prParent;
+            @Parameters(index = "0", description = "Pull Request number (e.g. 42).")
+            private int prNumber;
+            @Option(names = "--checkout", description = "Also checkout the PR branch using gh pr checkout.")
+            private boolean checkout;
+
+            @Override public Integer call() throws Exception {
+                HarnessConfig config = prParent.parent.loadConfig();
+                Path workspace = Path.of(config.tools().workspaceRoot()).toAbsolutePath().normalize();
+                Path prsDir = workspace.resolve(".cast").resolve("prs");
+                Files.createDirectories(prsDir);
+                Path diffFile = prsDir.resolve("pr-" + prNumber + ".diff");
+
+                System.out.println("Fetching PR #" + prNumber + " diff...");
+                String diffText = fetchPrDiff(prNumber, workspace);
+                if (diffText == null || diffText.isBlank()) {
+                    System.err.println("Failed to fetch diff for PR #" + prNumber + ". Ensure 'gh' CLI is installed or git remote is configured.");
+                    return 1;
+                }
+                Files.writeString(diffFile, diffText);
+                System.out.println("Saved PR #" + prNumber + " diff to " + diffFile.toAbsolutePath() + " (" + diffText.length() + " chars)");
+
+                if (checkout) {
+                    System.out.println("Checking out PR #" + prNumber + " branch...");
+                    checkoutPr(prNumber, workspace);
+                }
+                return 0;
+            }
+        }
+
+        @Command(name = "review", description = "Run first-pass local LLM code review on a PR diff.")
+        static final class Review implements Callable<Integer> {
+            @CommandLine.ParentCommand private PrCmd prParent;
+            @Parameters(index = "0", description = "Pull Request number (e.g. 42).")
+            private int prNumber;
+            @Option(names = "--focus", defaultValue = "", description = "Review focus area (e.g. error handling, missing tests).")
+            private String focus;
+
+            @Override public Integer call() throws Exception {
+                HarnessConfig config = prParent.parent.loadConfig();
+                Path workspace = Path.of(config.tools().workspaceRoot()).toAbsolutePath().normalize();
+                Path prsDir = workspace.resolve(".cast").resolve("prs");
+                Files.createDirectories(prsDir);
+                Path diffFile = prsDir.resolve("pr-" + prNumber + ".diff");
+                Path reviewFile = prsDir.resolve("pr-" + prNumber + "-review.md");
+
+                if (!Files.exists(diffFile)) {
+                    System.out.println("Diff file for PR #" + prNumber + " not found in .cast/prs/. Attempting fetch...");
+                    String diffText = fetchPrDiff(prNumber, workspace);
+                    if (diffText == null || diffText.isBlank()) {
+                        System.err.println("Could not retrieve PR #" + prNumber + " diff.");
+                        return 1;
+                    }
+                    Files.writeString(diffFile, diffText);
+                }
+
+                String diffText = Files.readString(diffFile);
+                if (diffText.isBlank()) {
+                    System.err.println("PR #" + prNumber + " diff is empty.");
+                    return 1;
+                }
+
+                try {
+                    System.out.println("Running local LLM review for PR #" + prNumber + "...");
+                    HarnessOrchestrator orchestrator = new HarnessOrchestrator(config);
+                    dev.justnels.castcli.tools.WorkspaceTools workspaceTools = new dev.justnels.castcli.tools.WorkspaceTools(workspace, 100_000);
+                    CastTelemetry telemetry = CastTelemetry.current();
+                    ReadOnlyDelegationTools delegation = new ReadOnlyDelegationTools(orchestrator, workspaceTools, telemetry, config.routing().maxContextChars());
+                    ObjectMapper mapper = new ObjectMapper();
+                    com.fasterxml.jackson.databind.node.ObjectNode args = mapper.createObjectNode();
+                    args.put("diff", diffText);
+                    if (!focus.isBlank()) args.put("focus", focus);
+                    var result = delegation.reviewDiff(args);
+
+                    String reviewContent = "# PR #" + prNumber + " Review Findings\n\n" + result.text();
+                    Files.writeString(reviewFile, reviewContent);
+                    System.out.println("Saved review report to " + reviewFile.toAbsolutePath());
+                    System.out.println("\n--- PR #" + prNumber + " Review Summary ---");
+                    System.out.println(result.text());
+                    return 0;
+                } catch (Exception e) {
+                    System.err.println("Local LLM review failed for PR #" + prNumber + ": " + e.getMessage());
+                    return 1;
+                }
+            }
+        }
+
+        @Command(name = "list", description = "List cached PR diffs and reviews in .cast/prs/.")
+        static final class ListCmd implements Callable<Integer> {
+            @CommandLine.ParentCommand private PrCmd prParent;
+
+            @Override public Integer call() throws Exception {
+                HarnessConfig config = prParent.parent.loadConfig();
+                Path workspace = Path.of(config.tools().workspaceRoot()).toAbsolutePath().normalize();
+                Path prsDir = workspace.resolve(".cast").resolve("prs");
+                if (!Files.exists(prsDir)) {
+                    System.out.println("No cached PRs found in .cast/prs/.");
+                    return 0;
+                }
+                try (var stream = Files.list(prsDir)) {
+                    List<Path> files = stream.sorted().toList();
+                    if (files.isEmpty()) {
+                        System.out.println("No cached PR files found in .cast/prs/.");
+                    } else {
+                        System.out.println("Cached PR files in " + prsDir + ":");
+                        for (Path f : files) {
+                            long size = Files.size(f);
+                            System.out.printf("  %-30s (%d bytes)%n", f.getFileName(), size);
+                        }
+                    }
+                }
+                return 0;
+            }
+        }
+
+        static String fetchPrDiff(int prNumber, Path workspace) {
+            try {
+                Process process = new ProcessBuilder("gh", "pr", "diff", String.valueOf(prNumber))
+                        .directory(workspace.toFile())
+                        .redirectError(ProcessBuilder.Redirect.DISCARD)
+                        .start();
+                String output = new String(process.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+                int exitCode = process.waitFor();
+                if (exitCode == 0 && !output.isBlank()) {
+                    return output;
+                }
+            } catch (Exception ignored) { }
+
+            try {
+                Process process = new ProcessBuilder("git", "fetch", "origin", "pull/" + prNumber + "/head:pr-" + prNumber)
+                        .directory(workspace.toFile())
+                        .redirectError(ProcessBuilder.Redirect.DISCARD)
+                        .start();
+                process.waitFor();
+                Process diffProc = new ProcessBuilder("git", "diff", "HEAD...pr-" + prNumber)
+                        .directory(workspace.toFile())
+                        .redirectError(ProcessBuilder.Redirect.DISCARD)
+                        .start();
+                String diffOutput = new String(diffProc.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+                if (diffProc.waitFor() == 0 && !diffOutput.isBlank()) {
+                    return diffOutput;
+                }
+            } catch (Exception ignored) { }
+
+            return null;
+        }
+
+        static void checkoutPr(int prNumber, Path workspace) {
+            try {
+                Process process = new ProcessBuilder("gh", "pr", "checkout", String.valueOf(prNumber))
+                        .directory(workspace.toFile())
+                        .inheritIO()
+                        .start();
+                process.waitFor();
+            } catch (Exception e) {
+                System.err.println("Failed to checkout PR #" + prNumber + ": " + e.getMessage());
             }
         }
     }

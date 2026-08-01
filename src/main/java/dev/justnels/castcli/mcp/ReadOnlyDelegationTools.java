@@ -11,6 +11,7 @@ import dev.justnels.castcli.tools.WorkspaceTools;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -20,7 +21,7 @@ import java.util.concurrent.TimeoutException;
  * Builds bounded, read-only task packets for local models. The model may propose code or a diff, but
  * these tools never mutate the workspace or execute a process.
  */
-final class ReadOnlyDelegationTools {
+public final class ReadOnlyDelegationTools {
     private static final int MAX_PATHS = 20;
     private static final int MAX_PARTITIONS = 4;
     private static final int MAX_SEARCH_RESULTS = 50;
@@ -36,18 +37,18 @@ final class ReadOnlyDelegationTools {
     private final ModelTier quickTier;
     private final ModelTier codeTier;
 
-    ReadOnlyDelegationTools(HarnessOrchestrator orchestrator, WorkspaceTools workspaceTools,
+    public ReadOnlyDelegationTools(HarnessOrchestrator orchestrator, WorkspaceTools workspaceTools,
                             CastTelemetry telemetry, int maxContextChars) {
         this(orchestrator, workspaceTools, telemetry, maxContextChars, DEFAULT_DEADLINE_MILLIS);
     }
 
-    ReadOnlyDelegationTools(HarnessOrchestrator orchestrator, WorkspaceTools workspaceTools,
+    public ReadOnlyDelegationTools(HarnessOrchestrator orchestrator, WorkspaceTools workspaceTools,
                             CastTelemetry telemetry, int maxContextChars, long deadlineMillis) {
         this(orchestrator, workspaceTools, telemetry, maxContextChars, deadlineMillis,
                 ModelTier.SMALL_LOCAL, ModelTier.LARGE_LOCAL);
     }
 
-    ReadOnlyDelegationTools(HarnessOrchestrator orchestrator, WorkspaceTools workspaceTools,
+    public ReadOnlyDelegationTools(HarnessOrchestrator orchestrator, WorkspaceTools workspaceTools,
                             CastTelemetry telemetry, int maxContextChars, long deadlineMillis,
                             ModelTier quickTier, ModelTier codeTier) {
         this.orchestrator = orchestrator;
@@ -117,7 +118,7 @@ final class ReadOnlyDelegationTools {
         return delegateSections(prompt, fileSections(paths), Workload.CODE);
     }
 
-    McpTool.ExecutionResult reviewDiff(JsonNode args) throws Exception {
+    public McpTool.ExecutionResult reviewDiff(JsonNode args) throws Exception {
         String prompt = """
                 Perform a first-pass, non-security code review of this diff. Report only actionable findings,
                 ranked by severity, with file/hunk evidence and a suggested correction. Do not provide final

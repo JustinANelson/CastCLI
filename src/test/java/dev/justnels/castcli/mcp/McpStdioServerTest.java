@@ -256,6 +256,28 @@ class McpStdioServerTest {
     }
 
     @Test
+    void callerModelFromNestedArgumentsMetaOrPropertyIsPersisted() throws Exception {
+        ProviderConfig provider = new ProviderConfig("small", ModelTier.SMALL_LOCAL, "http://fake/v1/",
+                "small-model", null, 0.1, 30, true, true);
+        HarnessConfig config = new HarnessConfig(List.of(provider), new RoutingConfig(240, true),
+                new ToolConfig(workspace.toString(), 100_000, false));
+        Files.writeString(workspace.resolve("sample.txt"), "hello world\n");
+
+        String request = """
+                {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_workspace_file","arguments":{"path":"sample.txt","_meta":{"callerModel":"gemini-3-6-flash"}}}}
+                """;
+        request = handshake() + request;
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        new McpStdioServer(config, new ByteArrayInputStream(request.getBytes(StandardCharsets.UTF_8)),
+                new PrintStream(out, true, StandardCharsets.UTF_8)).serve();
+
+        List<McpUsageRecord> usage = new McpUsageStore(workspace.resolve(".cast/metrics/mcp-usage.jsonl"))
+                .readSince(0);
+        assertThat(usage).hasSize(1);
+        assertThat(usage.getFirst().callerModel()).isEqualTo("gemini-3-6-flash");
+    }
+
+    @Test
     void impactMappingBudgetsLargeSearchBeforeDispatchAndBoundsOutput() throws Exception {
         Files.writeString(workspace.resolve("Large.java"),
                 ("ReadOnlyDelegationTools " + "x".repeat(1_000) + "\n").repeat(30));
