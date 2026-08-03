@@ -35,10 +35,10 @@ dependencies {
     checkstyle("com.puppycrawl.tools:checkstyle:10.14.0") {
         exclude(group = "com.google.collections", module = "google-collections")
     }
-    implementation(platform("dev.langchain4j:langchain4j-bom:1.18.0"))
+    implementation(platform("dev.langchain4j:langchain4j-bom:1.18.1"))
     implementation("dev.langchain4j:langchain4j")
     implementation("dev.langchain4j:langchain4j-open-ai")
-    implementation("dev.langchain4j:langchain4j-mcp:1.18.0-beta28")
+    implementation("dev.langchain4j:langchain4j-mcp:1.18.1-beta28")
     implementation("com.fasterxml.jackson.core:jackson-databind:2.22.1")
     implementation("info.picocli:picocli:4.7.7")
     implementation("ch.qos.logback:logback-classic:1.6.0")
