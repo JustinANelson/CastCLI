@@ -14,6 +14,7 @@ import dev.justnels.castcli.doctor.BuildInfo;
 import dev.justnels.castcli.index.IndexerIgnoreConfig;
 import dev.justnels.castcli.index.WorkspaceEmbeddingIndex;
 import dev.justnels.castcli.model.EmbeddingModelFactory;
+import dev.justnels.castcli.memory.CoordinationStore;
 import dev.justnels.castcli.memory.SessionMemorySummarizer;
 import dev.justnels.castcli.memory.SqliteMemoryStore;
 import dev.justnels.castcli.orchestration.HarnessOrchestrator;
@@ -352,8 +353,9 @@ public final class McpStdioServer {
                 Path.of(config.tools().workspaceRoot()), config.tools().maxFileBytes());
         Path workspace = Path.of(config.tools().workspaceRoot()).toAbsolutePath().normalize();
         Path configuredMemory = Path.of(config.memory().databasePath());
-        SqliteMemoryStore sqliteMemoryStore = new SqliteMemoryStore(
-                configuredMemory.isAbsolute() ? configuredMemory : workspace.resolve(configuredMemory));
+        Path memoryPath = configuredMemory.isAbsolute() ? configuredMemory : workspace.resolve(configuredMemory);
+        SqliteMemoryStore sqliteMemoryStore = new SqliteMemoryStore(memoryPath);
+        CoordinationStore coordinationStore = new CoordinationStore(memoryPath);
         SessionMemorySummarizer sessionSummarizer = new SessionMemorySummarizer(
                 sqliteMemoryStore, cheapOrchestrator, config.memory().defaultNamespace());
         MemoryTools memoryTools = new MemoryTools(sqliteMemoryStore, config.memory().defaultNamespace(), sessionSummarizer);
@@ -391,6 +393,59 @@ public final class McpStdioServer {
         registerTool("recall_session_memory", "Recalls long-term session summaries and turnover context across sessions and agents.",
                 schema(Map.of("query", "string", "maxResults", "integer")), args ->
                         memoryTools.recallSessionMemory(args.path("query").asText(""), args.path("maxResults").asInt(10)));
+        registerTool("coordination_snapshot",
+                "Returns authoritative project state, coordination tasks, leases, handoffs, and stale-lease warnings.",
+                schema(Map.of("taskLimit", "integer", "handoffLimit", "integer")), args ->
+                        formatSnapshot(coordinationStore.snapshot(
+                                args.path("taskLimit").asInt(50), args.path("handoffLimit").asInt(20))));
+        registerTool("set_project_state",
+                "Creates or version-updates canonical project objective, phase, decisions, and blockers.",
+                schema(Map.of("expectedVersion", "integer", "objective", "string", "phase", "string",
+                        "decisions", "string[]", "blockers", "string[]", "author", "string"),
+                        List.of("expectedVersion", "objective", "phase", "author")), args ->
+                        formatProjectState(coordinationStore.setProjectState(
+                                args.path("expectedVersion").asInt(), args.path("objective").asText(),
+                                args.path("phase").asText(), stringList(args.path("decisions")),
+                                stringList(args.path("blockers")), args.path("author").asText())));
+        registerTool("create_coordination_task",
+                "Creates a dependency-aware task with expected file ownership for conflict detection.",
+                schema(Map.of("title", "string", "description", "string", "dependencies", "string[]",
+                        "expectedFiles", "string[]", "createdBy", "string"), List.of("title", "createdBy")), args ->
+                        formatTask(coordinationStore.createTask(
+                                args.path("title").asText(), args.path("description").asText(""),
+                                stringList(args.path("dependencies")), stringList(args.path("expectedFiles")),
+                                args.path("createdBy").asText())));
+        registerTool("claim_coordination_task",
+                "Atomically claims or renews a task lease and reports expected-file overlap warnings.",
+                schema(Map.of("taskId", "string", "owner", "string", "leaseMinutes", "integer",
+                        "branch", "string", "worktree", "string"), List.of("taskId", "owner")), args ->
+                        formatClaim(coordinationStore.claimTask(
+                                args.path("taskId").asText(), args.path("owner").asText(),
+                                args.path("leaseMinutes").asInt(30), args.path("branch").asText(""),
+                                args.path("worktree").asText(""))));
+        registerTool("heartbeat_coordination_task",
+                "Renews a coordination lease; only the current owner may heartbeat the task.",
+                schema(Map.of("taskId", "string", "owner", "string", "leaseMinutes", "integer"),
+                        List.of("taskId", "owner")), args -> formatTask(coordinationStore.heartbeatTask(
+                                args.path("taskId").asText(), args.path("owner").asText(),
+                                args.path("leaseMinutes").asInt(30))));
+        registerTool("handoff_coordination_task",
+                "Records a structured handoff and releases the lease as OPEN, BLOCKED, or COMPLETE.",
+                schema(Map.ofEntries(
+                        Map.entry("taskId", "string"), Map.entry("owner", "string"),
+                        Map.entry("expectedVersion", "integer"), Map.entry("status", "string"),
+                        Map.entry("sessionId", "string"), Map.entry("summary", "string"),
+                        Map.entry("filesChanged", "string[]"), Map.entry("testsRun", "string[]"),
+                        Map.entry("failures", "string[]"), Map.entry("nextAction", "string"),
+                        Map.entry("commitRef", "string")),
+                        List.of("taskId", "owner", "expectedVersion", "status", "sessionId", "summary")), args ->
+                        formatHandoff(coordinationStore.handoffTask(
+                                args.path("taskId").asText(), args.path("owner").asText(),
+                                args.path("expectedVersion").asInt(), args.path("status").asText(),
+                                args.path("sessionId").asText(), args.path("summary").asText(),
+                                stringList(args.path("filesChanged")), stringList(args.path("testsRun")),
+                                stringList(args.path("failures")), args.path("nextAction").asText(""),
+                                args.path("commitRef").asText(""))));
 
         if (config.embeddings().enabled()) {
             WorkspaceEmbeddingIndex embeddingIndex = new WorkspaceEmbeddingIndex(
@@ -405,6 +460,54 @@ public final class McpStdioServer {
         }
     }
 
+    private static List<String> stringList(JsonNode node) {
+        if (node == null || !node.isArray()) return List.of();
+        List<String> values = new java.util.ArrayList<>();
+        node.forEach(value -> values.add(value.asText()));
+        return List.copyOf(values);
+    }
+
+    private static String formatProjectState(CoordinationStore.ProjectState state) {
+        return "PROJECT_STATE v" + state.version() + " phase=" + state.phase() + " author=" + state.author()
+                + " updated=" + state.updatedAt() + "\nobjective: " + state.objective()
+                + "\ndecisions: " + state.decisions() + "\nblockers: " + state.blockers();
+    }
+
+    private static String formatTask(CoordinationStore.CoordinationTask task) {
+        return "TASK " + task.id() + " v" + task.version() + " status=" + task.status()
+                + " owner=" + task.owner() + " lease=" + task.leaseExpiresAt() + "\n"
+                + task.title() + ": " + task.description() + "\ndependencies: " + task.dependencies()
+                + "\nexpectedFiles: " + task.expectedFiles() + "\nbranch: " + task.branch()
+                + " worktree: " + task.worktree() + "\nnotes: " + task.notes();
+    }
+
+    private static String formatClaim(CoordinationStore.ClaimResult claim) {
+        return formatTask(claim.task()) + "\nwarnings: " + claim.warnings();
+    }
+
+    private static String formatHandoff(CoordinationStore.HandoffResult result) {
+        CoordinationStore.Handoff handoff = result.handoff();
+        return formatTask(result.task()) + "\nHANDOFF " + handoff.id() + " session=" + handoff.sessionId()
+                + " agent=" + handoff.agent() + "\nsummary: " + handoff.summary()
+                + "\nfilesChanged: " + handoff.filesChanged() + "\ntestsRun: " + handoff.testsRun()
+                + "\nfailures: " + handoff.failures() + "\nnextAction: " + handoff.nextAction()
+                + "\ncommitRef: " + handoff.commitRef();
+    }
+
+    private static String formatSnapshot(CoordinationStore.CoordinationSnapshot snapshot) {
+        StringBuilder output = new StringBuilder();
+        if (snapshot.projectState() == null) output.append("PROJECT_STATE not set");
+        else output.append(formatProjectState(snapshot.projectState()));
+        output.append("\n\nWARNINGS\n").append(snapshot.warnings());
+        output.append("\n\nTASKS");
+        snapshot.tasks().forEach(task -> output.append("\n---\n").append(formatTask(task)));
+        output.append("\n\nRECENT_HANDOFFS");
+        snapshot.handoffs().forEach(handoff -> output.append("\n---\nHANDOFF ").append(handoff.id())
+                .append(" task=").append(handoff.taskId()).append(" agent=").append(handoff.agent())
+                .append(" created=").append(handoff.createdAt()).append("\nsummary: ").append(handoff.summary())
+                .append("\nnextAction: ").append(handoff.nextAction()).append("\ncommitRef: ").append(handoff.commitRef()));
+        return output.toString();
+    }
     private static HarnessConfig restrictToCheapTiers(HarnessConfig config) {
         List<ProviderConfig> cheapProviders = config.providers().stream()
                 .filter(p -> p.tier() != ModelTier.FRONTIER_CLOUD)

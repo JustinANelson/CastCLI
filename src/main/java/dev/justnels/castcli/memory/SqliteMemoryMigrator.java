@@ -14,7 +14,7 @@ import java.util.List;
  */
 public final class SqliteMemoryMigrator {
 
-    public static final int CURRENT_VERSION = 1;
+    public static final int CURRENT_VERSION = 2;
 
     @FunctionalInterface
     public interface MigrationStep {
@@ -37,6 +37,42 @@ public final class SqliteMemoryMigrator {
                     stmt.execute("CREATE INDEX IF NOT EXISTS idx_memories_namespace ON memories(namespace, scope, updated_at DESC)");
                     stmt.execute("CREATE INDEX IF NOT EXISTS idx_memories_expiry ON memories(expires_at)");
                     stmt.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_memories_dedupe ON memories(namespace, scope, content_hash)");
+                }
+            },
+            // Version 2: Structured multi-agent coordination state, task leases, and handoffs
+            connection -> {
+                try (Statement stmt = connection.createStatement()) {
+                    stmt.execute("""
+                            CREATE TABLE IF NOT EXISTS coordination_project_state (
+                              project_key TEXT PRIMARY KEY, objective TEXT NOT NULL, phase TEXT NOT NULL,
+                              decisions TEXT NOT NULL, blockers TEXT NOT NULL, author TEXT NOT NULL,
+                              version INTEGER NOT NULL, updated_at TEXT NOT NULL
+                            )
+                            """);
+                    stmt.execute("""
+                            CREATE TABLE IF NOT EXISTS coordination_tasks (
+                              id TEXT PRIMARY KEY, title TEXT NOT NULL, description TEXT NOT NULL,
+                              status TEXT NOT NULL, owner TEXT, branch TEXT, worktree TEXT,
+                              expected_files TEXT NOT NULL, dependencies TEXT NOT NULL,
+                              lease_expires_at TEXT, created_by TEXT NOT NULL, notes TEXT NOT NULL,
+                              version INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+                            )
+                            """);
+                    stmt.execute("""
+                            CREATE TABLE IF NOT EXISTS coordination_handoffs (
+                              id TEXT PRIMARY KEY, task_id TEXT NOT NULL, session_id TEXT NOT NULL,
+                              agent TEXT NOT NULL, summary TEXT NOT NULL, files_changed TEXT NOT NULL,
+                              tests_run TEXT NOT NULL, failures TEXT NOT NULL, next_action TEXT NOT NULL,
+                              commit_ref TEXT NOT NULL, created_at TEXT NOT NULL,
+                              FOREIGN KEY(task_id) REFERENCES coordination_tasks(id)
+                            )
+                            """);
+                    stmt.execute("CREATE INDEX IF NOT EXISTS idx_coordination_tasks_status "
+                            + "ON coordination_tasks(status, updated_at DESC)");
+                    stmt.execute("CREATE INDEX IF NOT EXISTS idx_coordination_tasks_owner "
+                            + "ON coordination_tasks(owner, lease_expires_at)");
+                    stmt.execute("CREATE INDEX IF NOT EXISTS idx_coordination_handoffs_task "
+                            + "ON coordination_handoffs(task_id, created_at DESC)");
                 }
             }
     );

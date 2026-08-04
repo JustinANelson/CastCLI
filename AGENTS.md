@@ -63,12 +63,23 @@ Run the narrowest relevant check first:
 Run the delegation audit after substantial coding work when CastCLI was available and eligible. For A/B token
 comparisons, use fresh sessions with equivalent model, reasoning effort, prompt, and repository state.
 
-## Multi-agent and multi-session memory turnover
+## Multi-agent and multi-session coordination
 
-When starting a session from scratch or switching between agents/roles:
-- Call `recall_session_memory` (or `recall_context` with topic query "session turnover") to retrieve past session action summaries, decisions, and pending next steps from the local long-term memory store.
-- Before ending a substantial session turn or handing off work to another agent, call `summarize_session` (or `remember_context`) to record completed session actions, key architectural decisions, modified files, and remaining work.
-- Background local LLM summarization automatically condenses session action streams into durable long-term memory records for seamless agent turnover.
+For substantial work or any handoff between agents/roles:
+- Start with `coordination_snapshot` to load the canonical objective, phase, decisions, blockers, active tasks,
+  leases, and recent structured handoffs. Then use `recall_session_memory` or `recall_context` for deeper history.
+- Create a dependency-aware task with `create_coordination_task`, declaring expected files before editing. Claim it
+  atomically with `claim_coordination_task`; treat lease conflicts as ownership boundaries and overlap warnings as
+  a prompt to coordinate before touching the reported files.
+- Renew long work with `heartbeat_coordination_task`. A lease is coordination metadata, not permission to overwrite
+  unrelated user changes; continue to inspect the worktree and preserve concurrent edits.
+- End owned work with `handoff_coordination_task`, recording status, files changed, tests run, failures, next action,
+  and commit/diff reference. Use `OPEN` for transferable work, `BLOCKED` for an explicit blocker, or `COMPLETE` only
+  after verification. The handoff releases the lease.
+- Update canonical project state through `set_project_state` using its current version. Version conflicts require a
+  fresh snapshot and reconciliation; never blindly overwrite another agent's newer decisions.
+- Use `summarize_session` for supplementary narrative history. Structured coordination state is authoritative for
+  current ownership and status; free-form memory is not a task lock.
 
 ## Persistent work checklist
 

@@ -7,9 +7,9 @@
 2. Run ./gradlew.bat installDist.
 3. Copy config/codex-mcp.example.toml into the applicable Codex config.toml, replace its absolute paths,
    restart Codex, and run /mcp.
-4. Confirm cast-cli is connected and exposes `ask_local`, `remember_context`, `recall_context`, `summarize_session`, `recall_session_memory`, plus the structured delegation tools.
+4. Confirm cast-cli is connected and exposes `ask_local`, memory tools, structured delegation tools, and coordination tools (`coordination_snapshot`, `set_project_state`, `create_coordination_task`, `claim_coordination_task`, `heartbeat_coordination_task`, and `handoff_coordination_task`).
 
-The checked-in AGENTS.md establishes mandatory delegation triggers (`generate_tests`, `review_diff`, `map_change_impact`, `analyze_failure`) for bounded, read-only work, while excluding security, credentials, destructive work, production operations, and final verification. Agents are also instructed to call `recall_session_memory` on session start and `summarize_session` before handoffs to maintain long-term memory turnover.
+The checked-in AGENTS.md establishes mandatory delegation triggers (`generate_tests`, `review_diff`, `map_change_impact`, `analyze_failure`) for bounded, read-only work, while excluding security, credentials, destructive work, production operations, and final verification. Agents are also instructed to load `coordination_snapshot`, atomically claim tasks before editing, heartbeat long-running work, and release leases through structured handoffs. Session summaries remain supplementary history.
 
 ## Verify utilization
 
@@ -20,11 +20,11 @@ The durable audit includes successful and failed calls even when OpenTelemetry e
 The report shows an **estimated frontier-equivalent cost** when a frontier reference is available. It is
 populated in two ways (in priority order):
 
-1. **`_meta.callerModel` per tool call** — the AGENTS.md policy instructs every frontier agent to include
+1. **`_meta.callerModel` per tool call** â€” the AGENTS.md policy instructs every frontier agent to include
    `"_meta": {"callerModel": "<model-name>"}` alongside `arguments` in each cast-cli tool call. The server
    records it on each audit entry, and `mcp-usage` resolves pricing from the harness config (matching by
    `modelName`, case-insensitive) or falls back to the configured FRONTIER_CLOUD provider.
-2. **Configured FRONTIER_CLOUD reference provider** — add an enabled provider with `"tier": "FRONTIER_CLOUD"`
+2. **Configured FRONTIER_CLOUD reference provider** â€” add an enabled provider with `"tier": "FRONTIER_CLOUD"`
    and non-zero `costPerMillionInputTokens`/`costPerMillionOutputTokens` in the harness config.
 
 
@@ -73,3 +73,14 @@ decision, and tool-result events:
 
 - https://learn.chatgpt.com/docs/extend/mcp
 - https://learn.chatgpt.com/docs/config-file/config-advanced
+
+## Coordinated multi-agent workflow
+
+1. Call `coordination_snapshot` before selecting work.
+2. Establish or version-update canonical project state with `set_project_state`.
+3. Create tasks with dependencies and expected files, then atomically claim one with a bounded lease.
+4. Reconcile any file-overlap warnings before editing and heartbeat work that outlives its lease window.
+5. Record a structured handoff with exact files, verification, failures, next action, and commit/diff reference.
+
+SQLite WAL, immediate transactions, and optimistic versions prevent double claims and lost project-state updates
+across local MCP processes. Expired leases can be taken over and are surfaced as warnings in snapshots.

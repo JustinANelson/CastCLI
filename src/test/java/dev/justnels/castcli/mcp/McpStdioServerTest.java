@@ -76,7 +76,9 @@ class McpStdioServerTest {
         assertThat(toolNames).contains("ask_local", "summarize_files", "analyze_failure", "draft_patch",
                 "generate_tests", "review_diff", "map_change_impact", "list_models", "read_workspace_file",
                 "list_workspace_files", "search_workspace", "remember_context", "recall_context",
-                "summarize_session", "recall_session_memory");
+                "summarize_session", "recall_session_memory", "coordination_snapshot", "set_project_state",
+                "create_coordination_task", "claim_coordination_task", "heartbeat_coordination_task",
+                "handoff_coordination_task");
 
         JsonNode askLocalSchema = toolsList.findValues("inputSchema").get(toolNames.indexOf("ask_local"));
         assertThat(askLocalSchema.path("required").toString()).contains("\"prompt\"");
@@ -377,6 +379,30 @@ class McpStdioServerTest {
         assertThat(result.path("content").get(0).path("text").asText()).contains("merged answer");
     }
 
+    @Test
+    void coordinationToolsPersistCanonicalStateAndExposeSnapshot() throws Exception {
+        ProviderConfig provider = new ProviderConfig("small", ModelTier.SMALL_LOCAL, "http://fake/v1/",
+                "small-model", null, 0.1, 30, true, true);
+        HarnessConfig config = new HarnessConfig(List.of(provider), new RoutingConfig(240, true),
+                new ToolConfig(workspace.toString(), 100_000, false));
+        String requests = String.join("\n",
+                "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"set_project_state\",\"arguments\":{\"expectedVersion\":0,\"objective\":\"Coordinate agents\",\"phase\":\"BUILD\",\"decisions\":[\"Use leases\"],\"blockers\":[],\"author\":\"Codex\"}}}",
+                "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"create_coordination_task\",\"arguments\":{\"title\":\"Add API\",\"description\":\"Implement it\",\"dependencies\":[],\"expectedFiles\":[\"src/api/**\"],\"createdBy\":\"Codex\"}}}",
+                "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"coordination_snapshot\",\"arguments\":{}}}") + "\n";
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+
+        new McpStdioServer(config, new ByteArrayInputStream(
+                (handshake() + requests).getBytes(StandardCharsets.UTF_8)),
+                new PrintStream(out, true, StandardCharsets.UTF_8)).serve();
+
+        List<JsonNode> responses = out.toString(StandardCharsets.UTF_8).lines().map(this::readTree).toList();
+        assertThat(responses.get(1).path("result").path("content").get(0).path("text").asText())
+                .contains("PROJECT_STATE v1", "Coordinate agents", "Use leases");
+        assertThat(responses.get(2).path("result").path("content").get(0).path("text").asText())
+                .contains("TASK", "Add API", "src/api/**");
+        assertThat(responses.get(3).path("result").path("content").get(0).path("text").asText())
+                .contains("PROJECT_STATE v1", "TASKS", "Add API");
+    }
     private JsonNode readTree(String line) {
         try {
             return mapper.readTree(line);
