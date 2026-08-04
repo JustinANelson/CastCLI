@@ -2,6 +2,7 @@ package dev.justnels.castcli;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import picocli.CommandLine;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -68,5 +69,64 @@ class CastCliTest {
         Path anchor = CastCli.resolveBootstrapAnchor(root);
 
         assertThat(anchor).isEqualTo(root);
+    }
+
+    @Test
+    void registersNativeFeatureCommand() {
+        assertThat(new CommandLine(new CastCli()).getSubcommands()).containsKey("feature");
+    }
+
+    @Test
+    void featurePromptStandardizesImplementationAndVerification() {
+        String prompt = CastCli.Feature.buildPrompt("Add task filtering");
+
+        assertThat(prompt).contains("Add task filtering", "Preserve unrelated changes",
+                "add or update focused tests", "Do not use cloud providers");
+    }
+
+    @Test
+    void featureDryRunUsesLocalConfigWithoutInvokingModels(@TempDir Path root) throws Exception {
+        Path config = writeFeatureConfig(root, "SMALL_LOCAL");
+
+        int exitCode = new CommandLine(new CastCli()).execute(
+                "--config", config.toString(), "feature", "--dry-run", "Add", "task", "filtering");
+
+        assertThat(exitCode).isZero();
+    }
+
+    @Test
+    void featureRefusesEnabledCloudProvidersEvenInDryRun(@TempDir Path root) throws Exception {
+        Path config = writeFeatureConfig(root, "FRONTIER_CLOUD");
+
+        int exitCode = new CommandLine(new CastCli()).execute(
+                "--config", config.toString(), "feature", "--dry-run", "Add", "task", "filtering");
+
+        assertThat(exitCode).isEqualTo(2);
+    }
+
+    private static Path writeFeatureConfig(Path root, String tier) throws Exception {
+        Path config = root.resolve("harness.json");
+        Files.writeString(config, """
+                {
+                  "providers": [{
+                    "id": "only-provider",
+                    "tier": "%s",
+                    "baseUrl": "http://localhost:11434/v1/",
+                    "modelName": "test-model",
+                    "temperature": 0.1,
+                    "timeoutSeconds": 30,
+                    "enabled": true
+                  }],
+                  "tools": {
+                    "workspaceRoot": "%s",
+                    "maxFileBytes": 1048576,
+                    "jshellEnabled": false,
+                    "allowWrites": true,
+                    "allowShellExec": true,
+                    "requireApproval": true
+                  }
+                }
+                """.formatted(tier, root.toString().replace("\\", "\\\\")));
+        return config;
     }
 }

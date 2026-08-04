@@ -77,7 +77,17 @@ public final class ConfigValidator {
             }
         }
 
-        // 4. Memory Store Check
+        // 4. Commissioning Provider Assignment Check
+        validateCommissioningProvider(
+                "projectManagerProviderId", config.commissioning().projectManagerProviderId(), config, errors);
+        validateCommissioningProvider("coderProviderId", config.commissioning().coderProviderId(), config, errors);
+        validateCommissioningProvider("testerProviderId", config.commissioning().testerProviderId(), config, errors);
+        validateCommissioningProvider(
+                "reviewerProviderId", config.commissioning().reviewerProviderId(), config, errors);
+        validateCommissioningProvider(
+                "generalLaborProviderId", config.commissioning().generalLaborProviderId(), config, errors);
+
+        // 5. Memory Store Check
         if (config.memory() != null && config.memory().enabled()) {
             if (config.memory().databasePath() == null || config.memory().databasePath().isBlank()) {
                 errors.add("Memory is enabled but databasePath is empty");
@@ -90,7 +100,7 @@ public final class ConfigValidator {
             }
         }
 
-        // 5. Observability Check
+        // 6. Observability Check
         if (config.observability() != null && config.observability().enabled()) {
             if (config.observability().otlpEnabled()) {
                 String endpoint = config.observability().otlpEndpoint();
@@ -109,14 +119,14 @@ public final class ConfigValidator {
             }
         }
 
-        // 6. Tool Settings Check
+        // 7. Tool Settings Check
         if (config.tools() != null) {
             if (config.tools().maxFileBytes() <= 0) {
                 errors.add("Tool maxFileBytes must be greater than zero");
             }
         }
 
-        // 7. Embeddings Settings Check
+        // 8. Embeddings Settings Check
         if (config.embeddings() != null && config.embeddings().enabled()) {
             if (config.embeddings().maxBatchSize() <= 0) {
                 errors.add("Embeddings maxBatchSize must be greater than zero");
@@ -128,5 +138,21 @@ public final class ConfigValidator {
 
         boolean valid = errors.isEmpty();
         return new ValidationResult(valid, errors, warnings);
+    }
+
+    private static void validateCommissioningProvider(
+            String setting, String providerId, HarnessConfig config, List<String> errors) {
+        if (providerId == null) {
+            return;
+        }
+        ProviderConfig provider = config.providers().stream()
+                .filter(candidate -> candidate.id().equals(providerId))
+                .findFirst()
+                .orElse(null);
+        if (provider == null) {
+            errors.add("Commissioning " + setting + " references unknown provider '" + providerId + "'");
+        } else if (!provider.enabled()) {
+            errors.add("Commissioning " + setting + " references disabled provider '" + providerId + "'");
+        }
     }
 }

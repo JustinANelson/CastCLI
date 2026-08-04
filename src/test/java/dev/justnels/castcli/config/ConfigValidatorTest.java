@@ -49,4 +49,26 @@ class ConfigValidatorTest {
         assertThat(result.valid()).isFalse();
         assertThat(result.errors()).anyMatch(err -> err.contains("Invalid OTLP endpoint URI"));
     }
+
+    @Test
+    void validateRejectsUnknownAndDisabledCommissioningProviders(@TempDir Path tempDir) {
+        ProviderConfig enabled = new ProviderConfig(
+                "pm", ModelTier.LARGE_LOCAL, "http://localhost/v1", "gemma4:12b",
+                null, 0.1, 30, true, true);
+        ProviderConfig disabled = new ProviderConfig(
+                "worker", ModelTier.SMALL_LOCAL, "http://localhost/v1", "qwen2.5-coder:7b",
+                null, 0.1, 30, true, false);
+        HarnessConfig config = new HarnessConfig(
+                List.of(enabled, disabled),
+                new RoutingConfig(240, true),
+                new ToolConfig(tempDir.toString(), 262_144, false),
+                List.of(), null, null, null, null, null,
+                new CommissioningConfig("pm", "worker", "missing", null, null));
+
+        ConfigValidator.ValidationResult result = new ConfigValidator().validate(config, null);
+
+        assertThat(result.valid()).isFalse();
+        assertThat(result.errors()).anyMatch(error -> error.contains("disabled provider 'worker'"));
+        assertThat(result.errors()).anyMatch(error -> error.contains("unknown provider 'missing'"));
+    }
 }

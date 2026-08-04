@@ -28,9 +28,14 @@ public final class PolicyRoutingStrategy implements RoutingStrategy {
         List<RoutingCandidate> candidates = new ArrayList<>();
         for (ProviderConfig provider : eligible) {
             if (!health.isAvailable(provider)) continue;
-            if (task.strict() && provider.tier() != target) continue;
-            if (privacySensitive && task.requestedTier() == null && provider.tier() == ModelTier.FRONTIER_CLOUD) continue;
+            if (task.requestedProviderId() != null && !provider.id().equals(task.requestedProviderId())) continue;
+            if (task.strict() && task.requestedProviderId() == null && provider.tier() != target) continue;
+            if (privacySensitive && task.requestedTier() == null && task.requestedProviderId() == null
+                    && provider.tier() == ModelTier.FRONTIER_CLOUD) continue;
             List<String> reasons = new ArrayList<>();
+            if (task.requestedProviderId() != null) {
+                reasons.add("requested-provider=" + task.requestedProviderId());
+            }
             int distance = Math.abs(provider.tier().ordinal() - target.ordinal());
             double score = 100 - distance * 35;
             reasons.add("tier-distance=" + distance);

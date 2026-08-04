@@ -1,0 +1,71 @@
+{
+  "providers": [
+    {
+      "id": "pm-local-gemma4-12b",
+      "tier": "LARGE_LOCAL",
+      "baseUrl": "${OLLAMA_BASE_URL:http://localhost:11434/v1/}",
+      "modelName": "gemma4:12b",
+      "apiKeyEnv": null,
+      "temperature": 0.1,
+      "timeoutSeconds": 300,
+      "toolsEnabled": true,
+      "maxToolsSupported": 5,
+      "enabled": true
+    },
+    {
+      "id": "coder-local-qwen-7b",
+      "tier": "SMALL_LOCAL",
+      "baseUrl": "${OLLAMA_BASE_URL:http://localhost:11434/v1/}",
+      "modelName": "qwen2.5-coder:7b",
+      "apiKeyEnv": null,
+      "temperature": 0.1,
+      "timeoutSeconds": 180,
+      "toolsEnabled": true,
+      "maxToolsSupported": 5,
+      "enabled": true
+    },
+    {
+      "id": "labor-local-qwen-1.5b",
+      "tier": "SMALL_LOCAL",
+      "baseUrl": "${OLLAMA_BASE_URL:http://localhost:11434/v1/}",
+      "modelName": "qwen2.5-coder:1.5b",
+      "apiKeyEnv": null,
+      "temperature": 0.1,
+      "timeoutSeconds": 120,
+      "toolsEnabled": true,
+      "maxToolsSupported": 4,
+      "enabled": true
+    }
+  ],
+  "commissioning": {
+    "projectManagerProviderId": "pm-local-gemma4-12b",
+    "coderProviderId": "coder-local-qwen-7b",
+    "testerProviderId": "labor-local-qwen-1.5b",
+    "reviewerProviderId": "pm-local-gemma4-12b",
+    "generalLaborProviderId": "labor-local-qwen-1.5b"
+  },
+  "routing": {
+    "quickPromptMaxChars": 240,
+    "preferLocal": true,
+    "maxContextChars": 12000,
+    "maxReworkIterations": 1
+  },
+  "tools": {
+    "workspaceRoot": ".",
+    "maxFileBytes": 262144,
+    "jshellEnabled": false,
+    "allowWrites": false,
+    "allowShellExec": false,
+    "requireApproval": true
+  },
+  "reliability": {
+    "maxAttemptsPerProvider": 2,
+    "initialBackoffMillis": 100,
+    "maxBackoffMillis": 2000,
+    "failureThreshold": 3,
+    "cooldownSeconds": 30,
+    "requestDeadlineSeconds": 600,
+    "maxConcurrentRequests": 2,
+    "fallbackOrder": {}
+  }
+}

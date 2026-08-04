@@ -69,6 +69,22 @@ class ModelRouterTest {
     }
 
     @Test
+    void exactProviderSelectionDisambiguatesProvidersInTheSameTier() {
+        ProviderConfig selected = new ModelRouter(config)
+                .route(new TaskRequest("implement this", Workload.CODE, null, "small", true, false));
+
+        assertThat(selected.id()).isEqualTo("small");
+    }
+
+    @Test
+    void exactProviderSelectionDoesNotSilentlySubstitute() {
+        assertThatThrownBy(() -> new ModelRouter(config)
+                .route(new TaskRequest("plan this", Workload.REASONING, null, "missing", true, true)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("provider 'missing'");
+    }
+
+    @Test
     void privacyPolicyExcludesCloudAndDecisionIsExplainable() {
         ModelRouter router = new ModelRouter(config);
         TaskRequest task = new TaskRequest("Analyze confidential customer data; do not upload it", Workload.REASONING, null);

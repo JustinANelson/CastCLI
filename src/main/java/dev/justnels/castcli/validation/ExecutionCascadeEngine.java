@@ -66,7 +66,7 @@ public final class ExecutionCascadeEngine {
                 String retryPrompt = initialRequest.prompt() + "\n\n[VALIDATION FAILURE]: " + failure.diagnostic()
                         + "\n[RETRY HINT]: " + failure.retryPromptHint();
                 currentRequest = new TaskRequest(retryPrompt, initialRequest.workload(), initialRequest.requestedTier(),
-                        initialRequest.strict(), initialRequest.toolsDisabled());
+                        initialRequest.requestedProviderId(), initialRequest.strict(), initialRequest.toolsDisabled());
             }
         }
 

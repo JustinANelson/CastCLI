@@ -31,7 +31,15 @@ time it can't find a config, using the same detection logic:
 # follow the printed 'ollama pull ...' commands for any missing models, then:
 ./cast-cli.exe doctor
 ./cast-cli.exe ask "what time is it"
+./cast-cli.exe feature "Add task filtering"
 ```
+
+`feature` is the one-command local implementation workflow. It anchors work to the current
+project, creates a consistent implementation-and-test prompt, and runs the commissioned PM/worker
+pipeline. It refuses to run while any enabled provider has the `FRONTIER_CLOUD` tier. Preview the
+resolved project, config, and prompt without calling a model with `feature --dry-run`; use
+`feature --yes` only in a trusted project to auto-approve file writes and verification commands.
+The active config must enable `tools.allowWrites` and `tools.allowShellExec` for a real run.
 
 > **Cost cap included by default.** Every hardware preset ships with a spend ceiling in its
 > `reliability` block (`maxCostUsdPerTask: 1.0`, `maxCumulativeCostUsd: 20.0`) so an enabled
@@ -138,11 +146,28 @@ its trace ID for correlation, and telemetry state/export can be inspected withou
 
 ## Multi-Agent Hierarchical Pipeline
 
-The harness includes an `AgentTeam` orchestrator that pairs high-capacity **Frontier Cloud models** (acting as Project Managers & Commissioning Agents) with **Local / Skilled Labor Agents**:
+The harness includes an `AgentTeam` orchestrator that can pair either a local or cloud Project
+Manager with smaller worker models:
 
-1. **PM Decomposition**: Frontier Cloud PM decomposes a goal into a `ProjectPlan` with structured subtasks assigned to worker roles (`CODER`, `TESTER`, `REVIEWER`, `GENERAL_LABOR`). This call is *strict*: it runs on `FRONTIER_CLOUD` or fails outright, never silently downgrading.
-2. **Skilled Labor Execution**: Local models (or cheap tiers) execute subtasks using bound tools (`WorkspaceTools` including a gated write, `SystemTools`, `JavaShellTool`, `ProcessExecTool` for allow-listed build/test/VCS commands, plus any tools from configured MCP servers). Independent `CODER`/`GENERAL_LABOR` subtasks run concurrently; a `REVIEWER` rejection triggers one bounded rework pass of the wave it reviewed.
-3. **PM Commissioning**: The PM reviews accumulated worker deliverables (context capped at `routing.maxContextChars`) and produces a final commissioning report, also strict on `FRONTIER_CLOUD`.
+1. **PM Decomposition**: The PM decomposes a goal into a `ProjectPlan` with structured subtasks assigned to worker roles (`CODER`, `TESTER`, `REVIEWER`, `GENERAL_LABOR`).
+2. **Skilled Labor Execution**: Assigned providers execute each role using bound tools. Independent `CODER`/`GENERAL_LABOR` subtasks run concurrently; a `REVIEWER` rejection triggers one bounded rework pass.
+3. **PM Commissioning**: The same PM reviews accumulated worker deliverables (context capped at `routing.maxContextChars`) and produces the final report.
+
+Set exact provider IDs in the optional `commissioning` block. Assignments are strict, so an
+unavailable model fails the run rather than silently sending work to another provider or the cloud.
+Omit an assignment to retain normal policy routing. The shipped
+[`config/harness.local-only.json`](config/harness.local-only.json) preset runs entirely through
+Ollama with Gemma 4 12B as PM/reviewer, Qwen 2.5 Coder 7B as coder, and Qwen 2.5 Coder 1.5B as
+tester/general labor:
+
+```powershell
+./gradlew.bat run --args='--config config/harness.local-only.json feature "Add task filtering"'
+./gradlew.bat run --args='--config config/harness.local-only.json feature --dry-run "Add task filtering"'
+./gradlew.bat run --args='--config config/harness.local-only.json feature --yes "Add task filtering"'
+```
+
+Use `commission` directly for custom project-manager goals or checkpoint resume. Use `feature` for
+the safe, standardized local-only path from a feature description to edits and verification.
 
 Progress checkpoints to `.cast/checkpoints/` after every wave, so `commission --resume <path>` can continue an interrupted run. `CommissioningResult` reports aggregate input/output tokens and estimated USD cost across the whole pipeline, plus an estimate of how much **FRONTIER_CLOUD spend was avoided** by routing worker subtasks to cheaper SMALL_LOCAL/LARGE_LOCAL tiers instead: the tokens those calls actually used, multiplied by a configured frontier provider's per-million-token rate, as a stand-in for "what this would have cost if a frontier model had done it." Both `ask` and `commission` print this alongside the regular token/cost summary whenever at least one enabled `FRONTIER_CLOUD` provider is configured.
 

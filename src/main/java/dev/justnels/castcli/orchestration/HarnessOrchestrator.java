@@ -387,7 +387,8 @@ public class HarnessOrchestrator {
         List<ProviderConfig> candidates = orderedFallbacks(ranked);
         if (task.strict() || !selectedTools.isEmpty()) candidates = candidates.subList(0, 1);
         TaskRequest executionTask = memoryContextProvider == null ? task
-                : new TaskRequest(memoryContextProvider.augment(task.prompt()), task.workload(), task.requestedTier(), task.strict());
+                : new TaskRequest(memoryContextProvider.augment(task.prompt()), task.workload(), task.requestedTier(),
+                        task.requestedProviderId(), task.strict(), task.toolsDisabled());
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(config.reliability().requestDeadlineSeconds());
         RuntimeException firstFailure = null;
         for (ProviderConfig provider : candidates) {
@@ -473,7 +474,8 @@ public class HarnessOrchestrator {
         long startTime = System.currentTimeMillis();
         ProviderConfig provider = router.route(task, List.of());
         TaskRequest executionTask = memoryContextProvider == null ? task
-                : new TaskRequest(memoryContextProvider.augment(task.prompt()), task.workload(), task.requestedTier(), task.strict());
+                : new TaskRequest(memoryContextProvider.augment(task.prompt()), task.workload(), task.requestedTier(),
+                        task.requestedProviderId(), task.strict(), task.toolsDisabled());
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(config.reliability().requestDeadlineSeconds());
         return reliabilityExecutor.execute(provider,
                 () -> streamWithProvider(executionTask, onToken, startTime, provider, cancelled, history), false, deadline);

@@ -29,8 +29,11 @@ public final class ModelRouter {
         List<RoutingCandidate> ranked = rank(task, selectedTools);
         if (ranked.isEmpty()) {
             ModelTier target = task.requestedTier() == null ? classify(task, selectedTools) : task.requestedTier();
-            String prefix = task.strict() ? "Strict routing requested tier " + target + " but " : "";
-            throw new IllegalStateException(prefix + "no healthy, enabled, credentialed provider meets capability and privacy requirements");
+            String selection = task.requestedProviderId() == null
+                    ? "tier " + target : "provider '" + task.requestedProviderId() + "'";
+            String prefix = task.strict() ? "Strict routing requested " + selection + " but " : "";
+            throw new IllegalStateException(prefix
+                    + "no healthy, enabled, credentialed provider meets capability and privacy requirements");
         }
         return ranked.getFirst().provider();
     }

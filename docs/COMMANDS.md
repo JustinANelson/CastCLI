@@ -60,6 +60,12 @@ Model names are examples, not hard requirements. Any server with an OpenAI-compa
 # Multi-agent commissioning pipeline
 ./gradlew.bat run --args='commission "Implement a thread-safe LRU Cache in Java"'
 ./gradlew.bat run --args='--config config/harness.vram-12gb.json commission "Design a REST API endpoint"'
+./gradlew.bat run --args='--config config/harness.local-only.json commission "Implement a local-only feature"'
+
+# One-command local-only feature implementation
+./gradlew.bat run --args='--config config/harness.local-only.json feature "Add task filtering"'
+./gradlew.bat run --args='--config config/harness.local-only.json feature --dry-run "Add task filtering"'
+./gradlew.bat run --args='--config config/harness.local-only.json feature --yes "Add task filtering"'
 
 # Give the router a workload hint
 ./gradlew.bat run --args='ask --workload QUICK "Write a short title"'
@@ -133,6 +139,11 @@ contexts). `commission` prints its checkpoint path after every run — pass it b
 a crashed or interrupted pipeline without re-running completed subtasks.
 
 ## Cloud credentials
+
+`feature` reuses the commissioning pipeline with a standardized implementation, test, and verification
+prompt. It refuses every config with an enabled `FRONTIER_CLOUD` provider, even for `--dry-run`, and a real
+run requires both write and process-exec tools. Run it from the target project's root so CastCLI anchors
+the generated task and workspace tools to that project.
 
 Set the variable referenced by a provider's `apiKeyEnv`, then enable that provider in local configuration:
 

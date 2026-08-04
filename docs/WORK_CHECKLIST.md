@@ -2,44 +2,38 @@
 
 ## Current objective
 
-Add structured multi-agent coordination to CastCLI: canonical project state, atomic task leases,
-dependency and file-overlap controls, structured handoffs, MCP tools, tests, and documentation.
+Add a native, one-command local-only feature implementation workflow to CastCLI.
 
 ## Checklist
 
-- [x] Add schema migration for coordination state, tasks, and handoffs.
-- [x] Implement transactional project state, dependency-aware tasks, atomic claims, heartbeats, stale lease takeover,
-  overlap warnings, structured handoffs, and snapshots.
-- [x] Register coordination MCP tools and schemas.
-- [x] Add focused persistence and MCP tests.
-- [x] Update agent and MCP workflow documentation.
-- [x] Run full test/check validation and review the final diff.
-- [x] Apply the verified patch to the primary CastCLI repository and rebuild `installDist`.
-- [x] Update CastHarness agent guidance and verify the new tools against its database.
+- [x] Add `cast-cli feature <description>` as a first-class command.
+- [x] Reuse the commissioning pipeline and standardized implementation prompt.
+- [x] Enforce local-only providers and required write/exec capabilities.
+- [x] Add `--dry-run`, `--yes`, focused tests, and command documentation.
+- [x] Run focused tests, diff review, full check, patch hygiene, and installed-distribution verification.
 
 ## Blockers and open decisions
 
-None.
+None. The required CastCLI local impact/test helpers were attempted, but this session's MCP server is
+scoped to CastHarness and could not read CastCLI paths. Direct inspection and verification are being used.
 
 ## Next action
 
-Report completion to the user.
+Report completion. The native command is available in the rebuilt installed distribution.
 
 ## Relevant paths
 
-- `src/main/java/dev/justnels/castcli/memory/CoordinationStore.java`
-- `src/main/java/dev/justnels/castcli/memory/SqliteMemoryMigrator.java`
-- `src/main/java/dev/justnels/castcli/mcp/McpStdioServer.java`
-- `src/test/java/dev/justnels/castcli/memory/CoordinationStoreTest.java`
-- `src/test/java/dev/justnels/castcli/mcp/McpStdioServerTest.java`
-- `AGENTS.md`
-- `docs/CODEX_MCP.md`
+- `src/main/java/dev/justnels/castcli/CastCli.java`
+- `src/test/java/dev/justnels/castcli/CastCliTest.java`
+- `README.md`
+- `docs/COMMANDS.md`
+- `config/harness.local-only.json`
 
 ## Verification status
 
 - `compileJava`: passed.
-- Focused coordination/MCP tests: passed; the command's finalized aggregate coverage check correctly requires the full suite.
-- `test`: passed with aggregate coverage verification.
-- `check`: passed.
-- `installDist`: passed in the primary CastCLI repository.
-- Installed MCP `tools/list` and `coordination_snapshot`: passed against CastHarness.
+- Focused `CastCliTest`: passed; the filtered-run aggregate coverage gate failed as expected.
+- Full `check`: passed with aggregate coverage verification.
+- `checkstyleMain`: passed with one unrelated pre-existing warning.
+- Installed distribution: rebuilt.
+- Installed `--help` discovery and CastHarness `feature --dry-run`: passed.

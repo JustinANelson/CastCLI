@@ -54,7 +54,10 @@ public final class LocalReworkVerifier {
             TaskRequest currentRequest = new TaskRequest(
                     currentPrompt,
                     task.workload(),
-                    task.requestedTier() == null ? ModelTier.LARGE_LOCAL : task.requestedTier(),
+                    task.requestedProviderId() == null
+                            ? (task.requestedTier() == null ? ModelTier.LARGE_LOCAL : task.requestedTier())
+                            : null,
+                    task.requestedProviderId(),
                     task.strict(),
                     task.toolsDisabled());
 

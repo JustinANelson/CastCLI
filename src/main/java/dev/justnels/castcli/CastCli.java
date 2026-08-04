@@ -55,7 +55,6 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.Callable;
 
 import dev.justnels.castcli.routing.DryRunService;
@@ -66,7 +65,8 @@ import dev.justnels.castcli.observability.TraceExplanationService;
         description = "CastCLI: Route tasks across local and frontier LLMs.",
         mixinStandardHelpOptions = true,
         versionProvider = CastCli.VersionProvider.class,
-        subcommands = {CastCli.Ask.class, CastCli.Models.class, CastCli.Commission.class, CastCli.McpServe.class,
+        subcommands = {CastCli.Ask.class, CastCli.Models.class, CastCli.Feature.class, CastCli.Commission.class,
+                CastCli.McpServe.class,
                 CastCli.Index.class, CastCli.RouteEval.class, CastCli.Memory.class, CastCli.SessionCmd.class, CastCli.Telemetry.class,
                 CastCli.McpUsage.class, CastCli.Doctor.class, CastCli.HealthServer.class, CastCli.Gateway.class,
                 CastCli.Completion.class, CastCli.ConfigCmd.class, CastCli.Init.class, CastCli.ConnectCmd.class,
@@ -955,6 +955,67 @@ public final class CastCli implements Runnable {
         }
     }
 
+    @Command(name = "feature", description = "Implement a feature with a local-only commissioned agent team.",
+            mixinStandardHelpOptions = true)
+    static final class Feature implements Callable<Integer> {
+        @CommandLine.ParentCommand
+        private CastCli parent;
+
+        @Parameters(arity = "1..*", description = "Feature description")
+        private String[] description;
+
+        @Option(names = {"-y", "--yes"}, description = "Auto-approve write/exec tool calls instead of prompting.")
+        private boolean autoApprove;
+
+        @Option(names = "--dry-run", description = "Print the generated prompt and configuration without invoking models.")
+        private boolean dryRun;
+
+        @Override
+        public Integer call() throws Exception {
+            HarnessConfig config = parent.loadConfig();
+            List<ProviderConfig> enabledCloud = config.providers().stream()
+                    .filter(ProviderConfig::enabled)
+                    .filter(provider -> provider.tier() == ModelTier.FRONTIER_CLOUD)
+                    .toList();
+            if (!enabledCloud.isEmpty()) {
+                System.err.println("feature is local-only and refuses enabled FRONTIER_CLOUD providers: "
+                        + enabledCloud.stream().map(ProviderConfig::id).toList());
+                return 2;
+            }
+
+            String featureDescription = String.join(" ", description).trim();
+            String prompt = buildPrompt(featureDescription);
+            if (dryRun) {
+                System.out.println("Project: " + Path.of("").toAbsolutePath().normalize());
+                System.out.println("Config:  " + parent.configPath.toAbsolutePath().normalize());
+                System.out.println("Mode:    local-only");
+                System.out.println("Prompt:");
+                System.out.println(prompt);
+                return 0;
+            }
+
+            if (!config.tools().allowWrites() || !config.tools().allowShellExec()) {
+                System.err.println("feature requires tools.allowWrites=true and tools.allowShellExec=true "
+                        + "so workers can edit files and run verification.");
+                return 2;
+            }
+            return Commission.execute(config, prompt, null, autoApprove);
+        }
+
+        static String buildPrompt(String featureDescription) {
+            return """
+                    Implement this feature in the current project:
+
+                    %s
+
+                    Inspect the repository and its agent instructions before editing. Preserve unrelated changes.
+                    Implement the feature completely, add or update focused tests, run the relevant verification,
+                    and finish with a concise report of files changed, tests run, and any remaining limitations.
+                    Do not use cloud providers.
+                    """.formatted(featureDescription).strip();
+        }
+    }
+
     @Command(name = "commission", description = "Run hierarchical multi-agent PM and labor execution.", mixinStandardHelpOptions = true)
     static final class Commission implements Callable<Integer> {
         @CommandLine.ParentCommand
@@ -977,7 +1038,11 @@ public final class CastCli implements Runnable {
                 System.err.println("Provide a goal, or --resume <checkpoint> with the original goal text.");
                 return 2;
             }
+            return execute(config, fullGoal, resumeFrom, autoApprove);
+        }
 
+        static int execute(HarnessConfig config, String fullGoal, Path resumeFrom, boolean autoApprove)
+                throws Exception {
             ApprovalGate gate = autoApprove ? AutoApprovalGate.INSTANCE : new ConsoleApprovalGate();
             try (McpClientManager mcp = McpClientManager.start(config.mcpServers())) {
                 HarnessOrchestrator orchestrator = new HarnessOrchestrator(

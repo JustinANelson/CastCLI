@@ -1,5 +1,6 @@
 package dev.justnels.castcli.agent;
 
+import dev.justnels.castcli.config.CommissioningConfig;
 import dev.justnels.castcli.config.HarnessConfig;
 import dev.justnels.castcli.memory.SessionAction;
 import dev.justnels.castcli.memory.SessionMemorySummarizer;
@@ -276,7 +277,9 @@ public final class AgentTeam {
         }
         prompt.append(context);
 
-        HarnessOrchestrator.Outcome outcome = orchestrator.run(new TaskRequest(prompt.toString(), workload, null));
+        String providerId = providerForRole(subtask.assignedRole());
+        HarnessOrchestrator.Outcome outcome = orchestrator.run(
+                assignedRequest(prompt.toString(), workload, providerId, false));
         span.attribute("gen_ai.provider.name", outcome.provider().id())
                 .attribute("gen_ai.usage.input_tokens", outcome.inputTokens())
                 .attribute("gen_ai.usage.output_tokens", outcome.outputTokens());
@@ -298,7 +301,8 @@ public final class AgentTeam {
                 GOAL: %s
                 """.formatted(goal);
 
-        TaskRequest request = new TaskRequest(pmPrompt, Workload.REASONING, null, false, true);
+        TaskRequest request = assignedRequest(
+                pmPrompt, Workload.REASONING, config.commissioning().projectManagerProviderId(), true);
         HarnessOrchestrator.Outcome pmOutcome = orchestrator.run(request);
         record(pmOutcome, metrics);
 
@@ -334,7 +338,9 @@ public final class AgentTeam {
                         + "call out exactly which reviewer feedback remains unresolved."
                 : "\nProvide a concise commissioning report approving the deliverable, summarizing key features, and certifying readiness.");
 
-        TaskRequest request = new TaskRequest(reportPrompt.toString(), Workload.REASONING, null, false, true);
+        TaskRequest request = assignedRequest(
+                reportPrompt.toString(), Workload.REASONING,
+                config.commissioning().projectManagerProviderId(), true);
         HarnessOrchestrator.Outcome outcome = orchestrator.run(request);
         record(outcome, metrics);
         return outcome.answer();
@@ -462,5 +468,22 @@ public final class AgentTeam {
             case GENERAL_LABOR -> Workload.AUTO;
         };
     }
-}
 
+    private String providerForRole(AgentRole role) {
+        CommissioningConfig commissioning = config.commissioning();
+        return switch (role) {
+            case CODER -> commissioning.coderProviderId();
+            case TESTER -> commissioning.testerProviderId();
+            case REVIEWER -> commissioning.reviewerProviderId();
+            case GENERAL_LABOR -> commissioning.generalLaborProviderId();
+            case PROJECT_MANAGER -> commissioning.projectManagerProviderId();
+        };
+    }
+
+    private static TaskRequest assignedRequest(
+            String prompt, Workload workload, String providerId, boolean toolsDisabled) {
+        return providerId == null
+                ? new TaskRequest(prompt, workload, null, false, toolsDisabled)
+                : new TaskRequest(prompt, workload, null, providerId, true, toolsDisabled);
+    }
+}

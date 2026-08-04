@@ -1,5 +1,6 @@
 package dev.justnels.castcli.agent;
 
+import dev.justnels.castcli.config.CommissioningConfig;
 import dev.justnels.castcli.config.HarnessConfig;
 import dev.justnels.castcli.config.ModelTier;
 import dev.justnels.castcli.config.ProviderConfig;
@@ -23,6 +24,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.BrokenBarrierException;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -108,6 +110,61 @@ class AgentTeamIntegrationTest {
         assertThat(tokenUsage.localMinusCloudTokens()).isEqualTo(8 * (10 + 5));
     }
 
+    @Test
+    void routesLocalManagerAndWorkerRolesToExplicitProviders() {
+        HarnessConfig config = new HarnessConfig(
+                List.of(
+                        new ProviderConfig("pm-12b", ModelTier.LARGE_LOCAL, "http://fake/v1/", "gemma4:12b",
+                                null, 0.1, 30, true, true),
+                        new ProviderConfig("coder-7b", ModelTier.SMALL_LOCAL, "http://fake/v1/", "qwen2.5-coder:7b",
+                                null, 0.1, 30, true, true),
+                        new ProviderConfig("labor-1.5b", ModelTier.SMALL_LOCAL, "http://fake/v1/",
+                                "qwen2.5-coder:1.5b", null, 0.1, 30, true, true)),
+                new RoutingConfig(240, true, 500, 0),
+                new ToolConfig(".", 100_000, false),
+                List.of(), null, null, null, null, null,
+                new CommissioningConfig("pm-12b", "coder-7b", "labor-1.5b", "pm-12b", "labor-1.5b"));
+        List<String> calls = new CopyOnWriteArrayList<>();
+        Function<String, String> responder = prompt -> {
+            if (prompt.contains("Break down the following goal")) {
+                return """
+                        TITLE: Implement feature
+                        ROLE: CODER
+                        PROMPT: Implement the feature.
+
+                        TITLE: Test feature
+                        ROLE: TESTER
+                        PROMPT: Test the feature.
+
+                        TITLE: Document feature
+                        ROLE: GENERAL_LABOR
+                        PROMPT: Document the feature.
+                        """;
+            }
+            return prompt.contains("Commissioning Agent") ? "Ready for delivery." : "Worker output.";
+        };
+        FakeChatModelFactory factory = new FakeChatModelFactory(
+                responder, (provider, prompt) -> calls.add(provider.id() + "|" + prompt));
+        HarnessOrchestrator orchestrator = new HarnessOrchestrator(
+                config, factory, new DefaultToolSelector(), new FastPathExecutor(),
+                AutoApprovalGate.INSTANCE, null);
+
+        CommissioningResult result = new AgentTeam(
+                config, orchestrator, new CheckpointStore(checkpointDir)).commission("Build a local feature");
+
+        assertThat(result.completedTasks()).hasSize(3);
+        assertThat(calls).filteredOn(call -> call.contains("Break down the following goal"))
+                .allMatch(call -> call.startsWith("pm-12b|"));
+        assertThat(calls).filteredOn(call -> call.contains("Lead Architect and Commissioning Agent"))
+                .allMatch(call -> call.startsWith("pm-12b|"));
+        assertThat(calls).filteredOn(call -> call.contains("Implement the feature."))
+                .allMatch(call -> call.startsWith("coder-7b|"));
+        assertThat(calls).filteredOn(call -> call.contains("Test the feature.")
+                        || call.contains("Document the feature."))
+                .allMatch(call -> call.startsWith("labor-1.5b|"));
+        assertThat(result.tokenUsageByProvider().cloudTokens()).isZero();
+    }
+
     private void maybeSynchronizeParallelCoders(String prompt) {
         boolean isInitialCoderCall = (prompt.contains("Implement feature A logic.") || prompt.contains("Implement feature B logic."))
                 && !prompt.contains("REVIEWER FEEDBACK");
@@ -167,9 +224,15 @@ class AgentTeamIntegrationTest {
 
     private static final class FakeChatModelFactory extends ChatModelFactory {
         private final Function<String, String> responder;
-        private final java.util.function.Consumer<String> beforeRespond;
+        private final java.util.function.BiConsumer<ProviderConfig, String> beforeRespond;
 
         FakeChatModelFactory(Function<String, String> responder, java.util.function.Consumer<String> beforeRespond) {
+            this(responder, (provider, prompt) -> beforeRespond.accept(prompt));
+        }
+
+        FakeChatModelFactory(
+                Function<String, String> responder,
+                java.util.function.BiConsumer<ProviderConfig, String> beforeRespond) {
             this.responder = responder;
             this.beforeRespond = beforeRespond;
         }
@@ -185,7 +248,7 @@ class AgentTeamIntegrationTest {
                             .map(UserMessage::singleText)
                             .findFirst()
                             .orElse("");
-                    beforeRespond.accept(prompt);
+                    beforeRespond.accept(provider, prompt);
                     String answer = responder.apply(prompt);
                     return ChatResponse.builder()
                             .aiMessage(AiMessage.from(answer))
@@ -196,4 +259,3 @@ class AgentTeamIntegrationTest {
         }
     }
 }
-

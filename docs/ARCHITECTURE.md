@@ -114,11 +114,11 @@ waves without external synchronization; `summarize()` produces the immutable, pr
 `Summary` returned as `CommissioningResult.tokenUsageByProvider()` and printed by `commission`. A provider
 that never ran doesn't appear in the breakdown at all, rather than showing up as a zeroed-out row.
 
-`TaskRequest.strict()` makes tier selection load-bearing rather than advisory: `ModelRouter` requires an
-exact tier match (no nearest-tier substitution) and `HarnessOrchestrator` does not fall back to a
-different tier on failure. `AgentTeam` sets `strict=true` on the PM's decomposition and final report
-calls, since the whole "frontier plans, cheap tiers execute" design depends on those two calls actually
-running on `FRONTIER_CLOUD` rather than silently downgrading.
+`TaskRequest.strict()` makes tier or provider selection load-bearing rather than advisory:
+`ModelRouter` requires an exact match and `HarnessOrchestrator` does not fall back on failure.
+`CommissioningConfig` can assign an exact provider ID to the project manager and each worker role.
+Assigned calls are strict; null assignments preserve policy routing. This supports both cloud-PM/local-worker
+teams and fully local hierarchies without adding model-size assumptions to the tier enum.
 
 ## Shared memory
 
@@ -191,4 +191,3 @@ latency, timeouts, context rejections, and fallback counts.
 3. Add a narrowly scoped `@Tool` class and register it in `DefaultToolSelector`.
 4. Add chat memory, retrieval, and tracing behind the orchestration layer.
 5. Keep CLI behavior thin so Antigravity IDE, Claude Code, Codex CLI, services, and tests can invoke the same Java classes.
-

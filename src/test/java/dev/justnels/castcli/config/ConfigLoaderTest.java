@@ -33,6 +33,30 @@ class ConfigLoaderTest {
         assertThat(loaded.observability().enabled()).isFalse();
         assertThat(loaded.mcpAudit().enabled()).isTrue();
         assertThat(loaded.mcpAudit().path()).isEqualTo(".cast/metrics/mcp-usage.jsonl");
+        assertThat(loaded.commissioning()).isEqualTo(CommissioningConfig.automatic());
+    }
+
+    @Test
+    void loadsCommissioningProviderAssignments() throws Exception {
+        Path config = tempDir.resolve("local-team.json");
+        Files.writeString(config, """
+                {
+                  "providers": [{
+                    "id": "pm-local", "tier": "LARGE_LOCAL", "baseUrl": "http://localhost/v1/",
+                    "modelName": "gemma4:12b", "timeoutSeconds": 30, "enabled": true
+                  }],
+                  "commissioning": {
+                    "projectManagerProviderId": "pm-local",
+                    "reviewerProviderId": "pm-local"
+                  }
+                }
+                """);
+
+        CommissioningConfig commissioning = new ConfigLoader().load(config).commissioning();
+
+        assertThat(commissioning.projectManagerProviderId()).isEqualTo("pm-local");
+        assertThat(commissioning.reviewerProviderId()).isEqualTo("pm-local");
+        assertThat(commissioning.coderProviderId()).isNull();
     }
 
     @Test
@@ -80,4 +104,3 @@ class ConfigLoaderTest {
         }
     }
 }
-

@@ -11,7 +11,8 @@ public record HarnessConfig(
         MemoryConfig memory,
         ReliabilityConfig reliability,
         ObservabilityConfig observability,
-        McpAuditConfig mcpAudit) {
+        McpAuditConfig mcpAudit,
+        CommissioningConfig commissioning) {
     public HarnessConfig {
         providers = providers == null ? List.of() : List.copyOf(providers);
         if (providers.isEmpty()) {
@@ -29,31 +30,39 @@ public record HarnessConfig(
         reliability = reliability == null ? ReliabilityConfig.defaults() : reliability;
         observability = observability == null ? ObservabilityConfig.disabled() : observability;
         mcpAudit = mcpAudit == null ? McpAuditConfig.defaults() : mcpAudit;
+        commissioning = commissioning == null ? CommissioningConfig.automatic() : commissioning;
+    }
+
+    public HarnessConfig(List<ProviderConfig> providers, RoutingConfig routing, ToolConfig tools,
+                         List<McpServerConfig> mcpServers, EmbeddingConfig embeddings,
+                         MemoryConfig memory, ReliabilityConfig reliability, ObservabilityConfig observability,
+                         McpAuditConfig mcpAudit) {
+        this(providers, routing, tools, mcpServers, embeddings, memory, reliability, observability, mcpAudit, null);
     }
 
     public HarnessConfig(List<ProviderConfig> providers, RoutingConfig routing, ToolConfig tools,
                          List<McpServerConfig> mcpServers, EmbeddingConfig embeddings,
                          MemoryConfig memory, ReliabilityConfig reliability, ObservabilityConfig observability) {
-        this(providers, routing, tools, mcpServers, embeddings, memory, reliability, observability, null);
+        this(providers, routing, tools, mcpServers, embeddings, memory, reliability, observability, null, null);
     }
 
     public HarnessConfig(List<ProviderConfig> providers, RoutingConfig routing, ToolConfig tools,
                          List<McpServerConfig> mcpServers, EmbeddingConfig embeddings,
                          MemoryConfig memory, ReliabilityConfig reliability) {
-        this(providers, routing, tools, mcpServers, embeddings, memory, reliability, null, null);
+        this(providers, routing, tools, mcpServers, embeddings, memory, reliability, null, null, null);
     }
 
     public HarnessConfig(List<ProviderConfig> providers, RoutingConfig routing, ToolConfig tools,
                          List<McpServerConfig> mcpServers, EmbeddingConfig embeddings) {
-        this(providers, routing, tools, mcpServers, embeddings, null, null, null, null);
+        this(providers, routing, tools, mcpServers, embeddings, null, null, null, null, null);
     }
 
     public HarnessConfig(List<ProviderConfig> providers, RoutingConfig routing, ToolConfig tools, List<McpServerConfig> mcpServers) {
-        this(providers, routing, tools, mcpServers, null, null, null, null, null);
+        this(providers, routing, tools, mcpServers, null, null, null, null, null, null);
     }
 
     public HarnessConfig(List<ProviderConfig> providers, RoutingConfig routing, ToolConfig tools) {
-        this(providers, routing, tools, List.of(), null, null, null, null, null);
+        this(providers, routing, tools, List.of(), null, null, null, null, null, null);
     }
 }
 
