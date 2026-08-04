@@ -535,15 +535,19 @@ public final class CastCli implements Runnable {
         @CommandLine.ParentCommand private CastCli parent;
         @Override public void run() { CommandLine.usage(this, System.out); }
 
-        @Command(name = "remember", description = "Store a namespaced memory.")
+        @Command(name = "remember", description = "Store a namespaced memory.", mixinStandardHelpOptions = true)
         static final class Remember implements Callable<Integer> {
             @CommandLine.ParentCommand private Memory memory;
-            @Option(names = "--namespace") private String namespace;
-            @Option(names = "--author", defaultValue = "Developer") private String author;
-            @Option(names = "--tags", split = ",") private java.util.List<String> tags;
-            @Option(names = "--read-only") private boolean readOnly;
-            @Parameters(index = "0", description = "Topic") private String topic;
-            @Parameters(index = "1", description = "Memory content") private String content;
+            @Option(names = "--namespace", description = "Namespace to store the memory in (defaults to the configured project namespace).")
+            private String namespace;
+            @Option(names = "--author", defaultValue = "Developer", description = "Author to attribute the memory to.")
+            private String author;
+            @Option(names = "--tags", split = ",", description = "Comma-separated tags for filtering later.")
+            private java.util.List<String> tags;
+            @Option(names = "--read-only", description = "Mark the memory read-only so it cannot be updated or deleted later.")
+            private boolean readOnly;
+            @Parameters(index = "0", description = "Short topic/title for the memory.") private String topic;
+            @Parameters(index = "1", description = "Memory content to store.") private String content;
             @Override public Integer call() throws Exception {
                 HarnessConfig config = memory.parent.loadConfig();
                 String ns = namespace == null ? config.memory().defaultNamespace() : namespace;
@@ -556,12 +560,14 @@ public final class CastCli implements Runnable {
             }
         }
 
-        @Command(name = "recall", description = "Hybrid-search shared memory.")
+        @Command(name = "recall", description = "Hybrid-search shared memory.", mixinStandardHelpOptions = true)
         static final class Recall implements Callable<Integer> {
             @CommandLine.ParentCommand private Memory memory;
-            @Option(names = "--namespace") private String namespace;
-            @Option(names = "--limit", defaultValue = "10") private int limit;
-            @Parameters(index = "0", description = "Query") private String query;
+            @Option(names = "--namespace", description = "Namespace to search within (defaults to the configured project namespace).")
+            private String namespace;
+            @Option(names = "--limit", defaultValue = "10", description = "Max results to return.") private int limit;
+            @Parameters(index = "0", arity = "0..1", defaultValue = "", description = "Search query (matches all entries if omitted).")
+            private String query;
             @Override public Integer call() throws Exception {
                 HarnessConfig config = memory.parent.loadConfig();
                 String ns = namespace == null ? config.memory().defaultNamespace() : namespace;
@@ -572,11 +578,12 @@ public final class CastCli implements Runnable {
             }
         }
 
-        @Command(name = "list", description = "List recent memories.")
+        @Command(name = "list", description = "List recent memories.", mixinStandardHelpOptions = true)
         static final class ListEntries implements Callable<Integer> {
             @CommandLine.ParentCommand private Memory memory;
-            @Option(names = "--namespace") private String namespace;
-            @Option(names = "--limit", defaultValue = "20") private int limit;
+            @Option(names = "--namespace", description = "Namespace to list (defaults to the configured project namespace).")
+            private String namespace;
+            @Option(names = "--limit", defaultValue = "20", description = "Max results to return.") private int limit;
             @Override public Integer call() throws Exception {
                 HarnessConfig config = memory.parent.loadConfig();
                 String ns = namespace == null ? config.memory().defaultNamespace() : namespace;
@@ -585,21 +592,24 @@ public final class CastCli implements Runnable {
             }
         }
 
-        @Command(name = "forget", description = "Delete a writable memory with optimistic version checking.")
+        @Command(name = "forget", description = "Delete a writable memory with optimistic version checking.", mixinStandardHelpOptions = true)
         static final class Forget implements Callable<Integer> {
             @CommandLine.ParentCommand private Memory memory;
-            @Parameters(index = "0") private String id;
-            @Option(names = "--version", required = true) private int version;
+            @Parameters(index = "0", description = "ID of the memory to delete.") private String id;
+            @Option(names = "--expected-version", required = true,
+                    description = "Expected current version, for optimistic concurrency control; the delete fails if it doesn't match.")
+            private int expectedVersion;
             @Override public Integer call() throws Exception {
                 try (MemoryStore store = openMemory(memory.parent.loadConfig())) {
-                    boolean deleted = store.delete(id, version);
+                    boolean deleted = store.delete(id, expectedVersion);
                     System.out.println(deleted ? "Deleted." : "Not deleted; check ID, version, or read-only status.");
                     return deleted ? 0 : 1;
                 }
             }
         }
 
-        @Command(name = "vacuum", description = "Purge expired memories, apply retention policies, optimize SQLite database, and optionally write a backup snapshot.")
+        @Command(name = "vacuum", description = "Purge expired memories, apply retention policies, optimize SQLite database, and optionally write a backup snapshot.",
+                mixinStandardHelpOptions = true)
         static final class Vacuum implements Callable<Integer> {
             @CommandLine.ParentCommand private Memory memory;
             @Option(names = "--retention-days", defaultValue = "0", description = "Retention period in days for purging non-read-only memories. 0 disables retention purging.")
@@ -647,7 +657,8 @@ public final class CastCli implements Runnable {
         @CommandLine.ParentCommand private CastCli parent;
         @Override public void run() { CommandLine.usage(this, System.out); }
 
-        @Command(name = "summarize", description = "Summarize session actions using the local LLM and save to long-term memory.")
+        @Command(name = "summarize", description = "Summarize session actions using the local LLM and save to long-term memory.",
+                mixinStandardHelpOptions = true)
         static final class Summarize implements Callable<Integer> {
             @CommandLine.ParentCommand private SessionCmd sessionParent;
             @Option(names = "--session-id", defaultValue = "default-session", description = "Session ID to associate with the summary.")
@@ -672,12 +683,12 @@ public final class CastCli implements Runnable {
             }
         }
 
-        @Command(name = "recall", description = "Recall session turnover summaries from long-term memory.")
+        @Command(name = "recall", description = "Recall session turnover summaries from long-term memory.", mixinStandardHelpOptions = true)
         static final class Recall implements Callable<Integer> {
             @CommandLine.ParentCommand private SessionCmd sessionParent;
             @Option(names = "--limit", defaultValue = "10", description = "Max results to return.")
             private int limit;
-            @Option(names = "--query", defaultValue = "", description = "Search query.")
+            @Parameters(index = "0", arity = "0..1", defaultValue = "", description = "Search query (matches all session summaries if omitted).")
             private String query;
 
             @Override public Integer call() throws Exception {
@@ -705,7 +716,7 @@ public final class CastCli implements Runnable {
         @CommandLine.ParentCommand private CastCli parent;
         @Override public void run() { CommandLine.usage(this, System.out); }
 
-        @Command(name = "fetch", description = "Fetch a GitHub PR diff and store it in .cast/prs/.")
+        @Command(name = "fetch", description = "Fetch a GitHub PR diff and store it in .cast/prs/.", mixinStandardHelpOptions = true)
         static final class Fetch implements Callable<Integer> {
             @CommandLine.ParentCommand private PrCmd prParent;
             @Parameters(index = "0", description = "Pull Request number (e.g. 42).")
@@ -737,7 +748,7 @@ public final class CastCli implements Runnable {
             }
         }
 
-        @Command(name = "review", description = "Run first-pass local LLM code review on a PR diff.")
+        @Command(name = "review", description = "Run first-pass local LLM code review on a PR diff.", mixinStandardHelpOptions = true)
         static final class Review implements Callable<Integer> {
             @CommandLine.ParentCommand private PrCmd prParent;
             @Parameters(index = "0", description = "Pull Request number (e.g. 42).")
@@ -794,7 +805,7 @@ public final class CastCli implements Runnable {
             }
         }
 
-        @Command(name = "list", description = "List cached PR diffs and reviews in .cast/prs/.")
+        @Command(name = "list", description = "List cached PR diffs and reviews in .cast/prs/.", mixinStandardHelpOptions = true)
         static final class ListCmd implements Callable<Integer> {
             @CommandLine.ParentCommand private PrCmd prParent;
 
