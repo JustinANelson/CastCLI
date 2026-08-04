@@ -73,20 +73,26 @@ public final class LocalMemoryCleaner {
     }
 
     private MemoryEntry consolidateGroup(String groupKey, List<MemoryEntry> groupEntries) {
-        String consolidatedContent;
+        // Deterministic extractive text first: this is the ground truth the LLM is asked to condense,
+        // so it's also what gets stored if condensation is unavailable or fails.
+        String extractive = buildFallbackConsolidatedContent(groupEntries);
+        String consolidatedContent = extractive;
+        double confidence = 0.95;
         if (orchestrator != null) {
-            String prompt = buildConsolidationPrompt(groupKey, groupEntries);
+            String prompt = buildConsolidationPrompt(groupKey, extractive);
             try {
+                // LARGE_LOCAL, not SMALL_LOCAL: background consolidation isn't latency-sensitive, so
+                // there's no reason to pay for the smaller model's higher hallucination risk.
                 HarnessOrchestrator.Outcome outcome = orchestrator.run(
-                        new TaskRequest(prompt, Workload.QUICK, ModelTier.SMALL_LOCAL));
-                consolidatedContent = (outcome != null && outcome.answer() != null && !outcome.answer().isBlank())
-                        ? outcome.answer().trim()
-                        : buildFallbackConsolidatedContent(groupEntries);
+                        new TaskRequest(prompt, Workload.QUICK, ModelTier.LARGE_LOCAL, false, true));
+                if (outcome != null && outcome.answer() != null && !outcome.answer().isBlank()) {
+                    consolidatedContent = outcome.answer().trim();
+                    // Lower than the extractive text's 0.95: model-condensed, verify surprising claims.
+                    confidence = 0.75;
+                }
             } catch (Exception e) {
-                consolidatedContent = buildFallbackConsolidatedContent(groupEntries);
+                // Keep the deterministic extractive text as consolidatedContent.
             }
-        } else {
-            consolidatedContent = buildFallbackConsolidatedContent(groupEntries);
         }
 
         MemoryDraft draft = new MemoryDraft(
@@ -98,7 +104,7 @@ public final class LocalMemoryCleaner {
                 "memory-cleaner",
                 List.of("session-summary", "consolidated", "turnover"),
                 0.85,
-                0.95,
+                confidence,
                 null,
                 false,
                 null
@@ -116,16 +122,19 @@ public final class LocalMemoryCleaner {
         return colonIdx > 0 ? topic.substring(0, colonIdx) : topic;
     }
 
-    private static String buildConsolidationPrompt(String groupKey, List<MemoryEntry> groupEntries) {
+    private static String buildConsolidationPrompt(String groupKey, String extractiveRecords) {
         StringBuilder sb = new StringBuilder();
-        sb.append("You are a local memory consolidation assistant. ");
-        sb.append("Deduplicate and combine the following session memory records into a single concise long-term summary.\n");
+        sb.append("You are a local memory consolidation assistant.\n");
+        sb.append("Below are VERBATIM, already-accurate session memory records for one group. ");
+        sb.append("Deduplicate and combine them into a single concise long-term summary. ");
+        sb.append("Do not summarize from memory or prior knowledge -- summarize only the records below.\n\n");
+        sb.append("STRICT RULES:\n");
+        sb.append("- Only state facts that literally appear in the records below. Never infer, assume, guess, ")
+                .append("or add any accomplishment, decision, or next step that is not explicitly present in them.\n");
+        sb.append("- If two records conflict, keep both statements rather than guessing which is correct.\n\n");
         sb.append("Group Key: ").append(groupKey).append("\n\n");
-        sb.append("Records:\n");
-        for (MemoryEntry entry : groupEntries) {
-            sb.append("- [").append(entry.topic()).append("] ").append(entry.content()).append("\n");
-        }
-        sb.append("\nProduce a unified, structured summary of key accomplishments, decisions, and active next steps.");
+        sb.append("VERBATIM RECORDS (ground truth -- do not contradict or add to this):\n").append(extractiveRecords).append("\n\n");
+        sb.append("Produce a unified, structured summary of key accomplishments, decisions, and active next steps.");
         return sb.toString();
     }
 

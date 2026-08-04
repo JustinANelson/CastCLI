@@ -55,7 +55,8 @@ public final class LocalReworkVerifier {
                     currentPrompt,
                     task.workload(),
                     task.requestedTier() == null ? ModelTier.LARGE_LOCAL : task.requestedTier(),
-                    task.strict());
+                    task.strict(),
+                    task.toolsDisabled());
 
             lastOutcome = orchestrator.run(currentRequest);
             String answer = lastOutcome != null ? lastOutcome.answer() : null;

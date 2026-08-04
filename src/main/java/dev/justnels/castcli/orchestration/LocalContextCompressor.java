@@ -32,7 +32,7 @@ public final class LocalContextCompressor {
             try {
                 String prompt = buildCompressionPrompt(rawText, maxTargetChars);
                 HarnessOrchestrator.Outcome outcome = orchestrator.run(
-                        new TaskRequest(prompt, Workload.QUICK, ModelTier.SMALL_LOCAL));
+                        new TaskRequest(prompt, Workload.QUICK, ModelTier.SMALL_LOCAL, false, true));
                 if (outcome != null && outcome.answer() != null && !outcome.answer().isBlank()) {
                     return outcome.answer().trim();
                 }

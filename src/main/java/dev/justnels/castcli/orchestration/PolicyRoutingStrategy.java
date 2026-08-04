@@ -63,7 +63,7 @@ public final class PolicyRoutingStrategy implements RoutingStrategy {
         ModelTier tier = switch (task.workload()) {
             case QUICK -> ModelTier.SMALL_LOCAL;
             case CODE -> ModelTier.LARGE_LOCAL;
-            case REASONING -> ModelTier.FRONTIER_CLOUD;
+            case REASONING -> config.routing().preferLocal() ? ModelTier.LARGE_LOCAL : ModelTier.FRONTIER_CLOUD;
             case AUTO -> classifyPrompt(task.prompt(), config);
         };
         boolean complex = selectedTools.stream().anyMatch(JavaShellTool.class::isInstance) || selectedTools.size() > 1;

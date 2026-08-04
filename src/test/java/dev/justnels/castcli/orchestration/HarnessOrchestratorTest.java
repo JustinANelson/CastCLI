@@ -79,6 +79,22 @@ class HarnessOrchestratorTest {
     }
 
     @Test
+    void toolsDisabledSkipsToolSelectionEvenWhenPromptContainsToolMarkers() {
+        FakeChatModelFactory factory = new FakeChatModelFactory();
+        HarnessOrchestrator orchestrator = new HarnessOrchestrator(
+                config, factory, new DefaultToolSelector(), new FastPathExecutor(),
+                AutoApprovalGate.INSTANCE, null);
+
+        // "search the repository" would normally select WorkspaceTools (see the sibling test above);
+        // toolsDisabled must suppress that regardless of prompt content, e.g. for report/summary
+        // generation calls that only quote prior output and have no legitimate tool use.
+        HarnessOrchestrator.Outcome outcome = orchestrator.run(
+                new TaskRequest("search the repository for the ticket validation code", Workload.CODE, null, false, true));
+
+        assertThat(outcome.toolsSelected()).isEmpty();
+    }
+
+    @Test
     void toolBearingFailureIsNotRetriedOrFallenBackToAnotherProvider() {
         List<String> calls = new CopyOnWriteArrayList<>();
         ChatModelFactory failingFactory = new ChatModelFactory() {

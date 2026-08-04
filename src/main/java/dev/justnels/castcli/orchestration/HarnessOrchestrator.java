@@ -7,6 +7,7 @@ import dev.justnels.castcli.index.WorkspaceEmbeddingIndex;
 import dev.justnels.castcli.model.ChatModelFactory;
 import dev.justnels.castcli.model.EmbeddingModelFactory;
 import dev.justnels.castcli.observability.CastTelemetry;
+import dev.justnels.castcli.memory.CachingMemoryStore;
 import dev.justnels.castcli.memory.MemoryContextProvider;
 import dev.justnels.castcli.memory.MemoryStore;
 import dev.justnels.castcli.memory.SqliteMemoryStore;
@@ -176,7 +177,7 @@ public class HarnessOrchestrator {
             Path workspace = Path.of(config.tools().workspaceRoot()).toAbsolutePath().normalize();
             Path configuredPath = Path.of(config.memory().databasePath());
             Path databasePath = configuredPath.isAbsolute() ? configuredPath : workspace.resolve(configuredPath);
-            this.memoryStore = new SqliteMemoryStore(databasePath);
+            this.memoryStore = new CachingMemoryStore(new SqliteMemoryStore(databasePath));
             dev.justnels.castcli.lifecycle.ShutdownHookManager.getInstance().register(this.memoryStore);
             this.memoryStore.purgeExpired();
             this.memoryStore.purgeOlderThan(config.memory().retentionDays());
@@ -361,7 +362,8 @@ public class HarnessOrchestrator {
                     true);
         }
 
-        List<Object> selectedTools = new ArrayList<>(toolSelector.selectTools(task, config.tools(), approvalGate));
+        List<Object> selectedTools = new ArrayList<>(task.toolsDisabled()
+                ? List.of() : toolSelector.selectTools(task, config.tools(), approvalGate));
         if (embeddingIndex != null && selectedTools.stream().anyMatch(WorkspaceTools.class::isInstance)) {
             selectedTools.add(new SemanticSearchTools(embeddingIndex));
         }

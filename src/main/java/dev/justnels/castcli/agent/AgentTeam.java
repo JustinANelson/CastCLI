@@ -1,7 +1,6 @@
 package dev.justnels.castcli.agent;
 
 import dev.justnels.castcli.config.HarnessConfig;
-import dev.justnels.castcli.config.ModelTier;
 import dev.justnels.castcli.memory.SessionAction;
 import dev.justnels.castcli.memory.SessionMemorySummarizer;
 import dev.justnels.castcli.memory.SqliteMemoryStore;
@@ -30,10 +29,12 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
- * Hierarchical PM/skilled-labor pipeline. A FRONTIER_CLOUD model decomposes the goal into a plan,
- * independent worker subtasks run concurrently in waves, a REVIEWER's rejection triggers one bounded
- * rework pass of the wave it reviewed, progress is checkpointed after every wave for crash recovery,
- * and prior-subtask context handed to later workers is capped instead of growing without bound.
+ * Hierarchical PM/skilled-labor pipeline. A REASONING-tier model (routed like any other task —
+ * frontier if enabled and not {@code preferLocal}, otherwise the best local tier) decomposes the
+ * goal into a plan, independent worker subtasks run concurrently in waves, a REVIEWER's rejection
+ * triggers one bounded rework pass of the wave it reviewed, progress is checkpointed after every
+ * wave for crash recovery, and prior-subtask context handed to later workers is capped instead of
+ * growing without bound.
  */
 public final class AgentTeam {
     private static final Pattern SUBTASK_PATTERN = Pattern.compile(
@@ -297,7 +298,7 @@ public final class AgentTeam {
                 GOAL: %s
                 """.formatted(goal);
 
-        TaskRequest request = new TaskRequest(pmPrompt, Workload.REASONING, ModelTier.FRONTIER_CLOUD, true);
+        TaskRequest request = new TaskRequest(pmPrompt, Workload.REASONING, null, false, true);
         HarnessOrchestrator.Outcome pmOutcome = orchestrator.run(request);
         record(pmOutcome, metrics);
 
@@ -333,7 +334,7 @@ public final class AgentTeam {
                         + "call out exactly which reviewer feedback remains unresolved."
                 : "\nProvide a concise commissioning report approving the deliverable, summarizing key features, and certifying readiness.");
 
-        TaskRequest request = new TaskRequest(reportPrompt.toString(), Workload.REASONING, ModelTier.FRONTIER_CLOUD, true);
+        TaskRequest request = new TaskRequest(reportPrompt.toString(), Workload.REASONING, null, false, true);
         HarnessOrchestrator.Outcome outcome = orchestrator.run(request);
         record(outcome, metrics);
         return outcome.answer();

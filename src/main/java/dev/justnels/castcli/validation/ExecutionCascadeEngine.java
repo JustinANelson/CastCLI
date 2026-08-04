@@ -65,7 +65,8 @@ public final class ExecutionCascadeEngine {
             if (attempt <= maxLocalRetries) {
                 String retryPrompt = initialRequest.prompt() + "\n\n[VALIDATION FAILURE]: " + failure.diagnostic()
                         + "\n[RETRY HINT]: " + failure.retryPromptHint();
-                currentRequest = new TaskRequest(retryPrompt, initialRequest.workload(), initialRequest.requestedTier(), initialRequest.strict());
+                currentRequest = new TaskRequest(retryPrompt, initialRequest.workload(), initialRequest.requestedTier(),
+                        initialRequest.strict(), initialRequest.toolsDisabled());
             }
         }
 
@@ -76,7 +77,8 @@ public final class ExecutionCascadeEngine {
         if (cloudEnabled) {
             String cloudPrompt = initialRequest.prompt() + "\n\n[PREVIOUS LOCAL ATTEMPTS FAILED VALIDATION]: "
                     + (history.isEmpty() ? "validation failed" : history.get(history.size() - 1).diagnostic());
-            TaskRequest cloudRequest = new TaskRequest(cloudPrompt, initialRequest.workload(), ModelTier.FRONTIER_CLOUD, false);
+            TaskRequest cloudRequest = new TaskRequest(cloudPrompt, initialRequest.workload(), ModelTier.FRONTIER_CLOUD,
+                    false, initialRequest.toolsDisabled());
 
             HarnessOrchestrator.Outcome cloudOutcome = modelExecutor.apply(cloudRequest);
             if (cloudOutcome != null) {

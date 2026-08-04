@@ -78,37 +78,34 @@ class AgentTeamIntegrationTest {
         assertThat(result.totalOutputTokens()).isGreaterThan(0);
         assertThat(result.estimatedCostUsd()).isGreaterThan(0);
 
-        // Every call in this scripted run returns 10 input / 5 output tokens. The PM's plan/report calls
-        // are strict FRONTIER_CLOUD, and REASONING-workload reviewer calls route to FRONTIER_CLOUD too
-        // (its routing distance to a REASONING target is 0). Only the 4 CODE-workload coder calls (the
-        // initial 2 plus the 2 reworked after rejection) route to the LARGE_LOCAL tier and count as
-        // offloaded. small/large/cloud share the same $1/$2-per-million rate here, so the avoided-cost
-        // estimate equals exactly what those 4 offloaded calls would have cost had they run on "cloud".
+        // Every call in this scripted run returns 10 input / 5 output tokens. Routing config has
+        // preferLocal=true, and both the PM's plan/report calls and REASONING-workload reviewer calls
+        // are now non-strict requests routed like everything else -- with preferLocal=true they land on
+        // LARGE_LOCAL rather than being forced onto FRONTIER_CLOUD. So all 8 calls (plan, 2 initial
+        // coders, reject-review, 2 reworked coders, approve-review, report) run on "large" and count as
+        // offloaded; "cloud" never runs anything but stays configured as the cost-avoidance reference.
         assertThat(result.referenceFrontierModel()).isEqualTo("cloud-model");
-        assertThat(result.tokensOffloadedToLocal()).isEqualTo(4 * (10 + 5));
+        assertThat(result.tokensOffloadedToLocal()).isEqualTo(8 * (10 + 5));
         assertThat(result.estimatedFrontierCostAvoidedUsd())
-                .isCloseTo(4 * ((10 / 1_000_000.0) * 1.0 + (5 / 1_000_000.0) * 2.0), within(1e-9));
+                .isCloseTo(8 * ((10 / 1_000_000.0) * 1.0 + (5 / 1_000_000.0) * 2.0), within(1e-9));
 
         assertThat(result.checkpointPath()).exists();
         Checkpoint persisted = new CheckpointStore(checkpointDir).load(result.checkpointPath()).orElseThrow();
         assertThat(persisted.completedTasks()).hasSize(3);
 
-        // Per-provider breakdown: "cloud" ran the plan, both reviews, and the report (4 calls); "large"
-        // ran the initial and reworked coder subtasks (4 calls); "small" never ran anything, so it's
-        // absent entirely rather than showing up as a zeroed-out row.
+        // Per-provider breakdown: "large" ran all 8 calls (plan, both review passes, report, and all 4
+        // coder calls); "cloud" and "small" never ran anything, so both are absent entirely rather than
+        // showing up as zeroed-out rows.
         var tokenUsage = result.tokenUsageByProvider();
         assertThat(tokenUsage.byProvider()).extracting(TokenUsageReport.ProviderUsage::providerId)
-                .containsExactly("cloud", "large");
-        var cloudUsage = tokenUsage.byProvider().stream().filter(p -> p.providerId().equals("cloud")).findFirst().orElseThrow();
+                .containsExactly("large");
         var largeUsage = tokenUsage.byProvider().stream().filter(p -> p.providerId().equals("large")).findFirst().orElseThrow();
-        assertThat(cloudUsage.calls()).isEqualTo(4);
-        assertThat(cloudUsage.totalTokens()).isEqualTo(4 * (10 + 5));
-        assertThat(largeUsage.calls()).isEqualTo(4);
-        assertThat(largeUsage.totalTokens()).isEqualTo(4 * (10 + 5));
-        assertThat(tokenUsage.cloudTokens()).isEqualTo(60);
-        assertThat(tokenUsage.localTokens()).isEqualTo(60);
-        assertThat(tokenUsage.cloudShare()).isCloseTo(0.5, within(1e-9));
-        assertThat(tokenUsage.localMinusCloudTokens()).isZero();
+        assertThat(largeUsage.calls()).isEqualTo(8);
+        assertThat(largeUsage.totalTokens()).isEqualTo(8 * (10 + 5));
+        assertThat(tokenUsage.cloudTokens()).isZero();
+        assertThat(tokenUsage.localTokens()).isEqualTo(8 * (10 + 5));
+        assertThat(tokenUsage.cloudShare()).isCloseTo(0.0, within(1e-9));
+        assertThat(tokenUsage.localMinusCloudTokens()).isEqualTo(8 * (10 + 5));
     }
 
     private void maybeSynchronizeParallelCoders(String prompt) {
