@@ -53,19 +53,64 @@ public final class ConnectService {
                                                       String bearerToken, boolean dryRun, boolean force) {
         ClientConnector connector = getConnector(clientId);
         if (connector == null) {
-            throw new IllegalArgumentException("Unknown client '" + clientId + "'. Supported clients: " + getSupportedClientIds());
+            throw new IllegalArgumentException("Unknown client '" + clientId + "'. Supported clients: " + getSupportedClientIds() + ", all, all-connected");
         }
         Path configPath = connector.resolveConfigPath(workspaceRoot);
         return connector.connect(configPath, gatewayPort, bearerToken, dryRun, force);
     }
 
+    public List<ClientConnector.ConnectResult> connectClientOrAll(String clientId, Path workspaceRoot, int gatewayPort,
+                                                                 String bearerToken, boolean dryRun, boolean force) {
+        if ("all".equalsIgnoreCase(clientId)) {
+            return connectAll(workspaceRoot, gatewayPort, bearerToken, dryRun, force, false);
+        }
+        if ("all-connected".equalsIgnoreCase(clientId)) {
+            return connectAll(workspaceRoot, gatewayPort, bearerToken, dryRun, force, true);
+        }
+        return List.of(connectClient(clientId, workspaceRoot, gatewayPort, bearerToken, dryRun, force));
+    }
+
     public ClientConnector.DisconnectResult disconnectClient(String clientId, Path workspaceRoot, boolean dryRun) {
         ClientConnector connector = getConnector(clientId);
         if (connector == null) {
-            throw new IllegalArgumentException("Unknown client '" + clientId + "'. Supported clients: " + getSupportedClientIds());
+            throw new IllegalArgumentException("Unknown client '" + clientId + "'. Supported clients: " + getSupportedClientIds() + ", all, all-connected");
         }
         Path configPath = connector.resolveConfigPath(workspaceRoot);
         return connector.disconnect(configPath, dryRun);
+    }
+
+    public List<ClientConnector.DisconnectResult> disconnectClientOrAll(String clientId, Path workspaceRoot, boolean dryRun) {
+        if ("all".equalsIgnoreCase(clientId) || "all-connected".equalsIgnoreCase(clientId)) {
+            return disconnectAll(workspaceRoot, dryRun, "all-connected".equalsIgnoreCase(clientId));
+        }
+        return List.of(disconnectClient(clientId, workspaceRoot, dryRun));
+    }
+
+    public List<ClientConnector.ConnectResult> connectAll(Path workspaceRoot, int gatewayPort, String bearerToken,
+                                                          boolean dryRun, boolean force, boolean onlyConnected) {
+        List<ClientConnector.ConnectResult> results = new java.util.ArrayList<>();
+        for (ClientConnector connector : listConnectors()) {
+            Path configPath = connector.resolveConfigPath(workspaceRoot);
+            if (!onlyConnected || connector.isConnected(configPath)) {
+                results.add(connector.connect(configPath, gatewayPort, bearerToken, dryRun, force));
+            }
+        }
+        return results;
+    }
+
+    public List<ClientConnector.DisconnectResult> disconnectAll(Path workspaceRoot, boolean dryRun, boolean onlyConnected) {
+        List<ClientConnector.DisconnectResult> results = new java.util.ArrayList<>();
+        for (ClientConnector connector : listConnectors()) {
+            Path configPath = connector.resolveConfigPath(workspaceRoot);
+            if (!onlyConnected || connector.isConnected(configPath)) {
+                results.add(connector.disconnect(configPath, dryRun));
+            }
+        }
+        return results;
+    }
+
+    public List<ClientConnector.ConnectResult> refreshAll(Path workspaceRoot, int gatewayPort, String bearerToken, boolean dryRun) {
+        return connectAll(workspaceRoot, gatewayPort, bearerToken, dryRun, true, true);
     }
 
     public boolean checkConnectivity(int gatewayPort, String bearerToken) {

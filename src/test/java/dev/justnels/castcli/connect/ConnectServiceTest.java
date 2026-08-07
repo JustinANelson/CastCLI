@@ -158,6 +158,26 @@ class ConnectServiceTest {
     }
 
     @Test
+    void bulkConnectAndRefreshWorkflow(@TempDir Path tempDir) {
+        ConnectService service = new ConnectService();
+
+        // Connect all clients
+        List<ClientConnector.ConnectResult> results = service.connectClientOrAll("all", tempDir, 8081, null, false, false);
+        assertFalse(results.isEmpty());
+        assertTrue(results.stream().allMatch(ClientConnector.ConnectResult::success));
+
+        // Refresh all connected
+        List<ClientConnector.ConnectResult> refreshed = service.refreshAll(tempDir, 8081, "token-123", false);
+        assertFalse(refreshed.isEmpty());
+        assertTrue(refreshed.stream().allMatch(ClientConnector.ConnectResult::success));
+
+        // Disconnect all
+        List<ClientConnector.DisconnectResult> disconnected = service.disconnectClientOrAll("all-connected", tempDir, false);
+        assertFalse(disconnected.isEmpty());
+        assertTrue(disconnected.stream().allMatch(ClientConnector.DisconnectResult::success));
+    }
+
+    @Test
     void throwsOnUnknownClient(@TempDir Path tempDir) {
         ConnectService service = new ConnectService();
         assertThrows(IllegalArgumentException.class, () ->

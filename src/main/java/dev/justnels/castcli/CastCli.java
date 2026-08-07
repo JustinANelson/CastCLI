@@ -658,7 +658,7 @@ public final class CastCli implements Runnable {
     }
 
     @Command(name = "session", description = "Manage session action summaries and long-term memory turnover.", mixinStandardHelpOptions = true,
-            subcommands = {SessionCmd.Summarize.class, SessionCmd.Recall.class})
+            subcommands = {SessionCmd.Summarize.class, SessionCmd.Recall.class, SessionCmd.Refresh.class})
     static final class SessionCmd implements Runnable {
         @CommandLine.ParentCommand private CastCli parent;
         @Override public void run() { CommandLine.usage(this, System.out); }
@@ -708,6 +708,36 @@ public final class CastCli implements Runnable {
                             for (MemoryEntry entry : entries) {
                                 Memory.printMemory(entry);
                             }
+                        }
+                    }
+                }
+                return 0;
+            }
+        }
+
+        @Command(name = "refresh", description = "Refresh session memory and re-apply configuration across all connected agents.", mixinStandardHelpOptions = true)
+        static final class Refresh implements Callable<Integer> {
+            @CommandLine.ParentCommand private SessionCmd sessionParent;
+            @Option(names = "--port", defaultValue = "8081", description = "CastCLI gateway port.")
+            private int gatewayPort;
+            @Option(names = "--token", description = "Bearer token for authenticating to CastCLI gateway.")
+            private String bearerToken;
+            @Option(names = "--dry-run", description = "Show proposed configuration diff without modifying files.")
+            private boolean dryRun;
+
+            @Override public Integer call() throws Exception {
+                Path workspace = Path.of("").toAbsolutePath();
+                ConnectService service = new ConnectService();
+                List<ClientConnector.ConnectResult> results = service.refreshAll(workspace, gatewayPort, bearerToken, dryRun);
+
+                System.out.println("=== Refreshed Session Configurations for Connected Agents ===");
+                if (results.isEmpty()) {
+                    System.out.println("No client agents are currently connected.");
+                } else {
+                    for (ClientConnector.ConnectResult result : results) {
+                        System.out.println(result.message());
+                        if (!result.diff().isEmpty()) {
+                            System.out.println(result.diff());
                         }
                     }
                 }
@@ -1524,7 +1554,7 @@ public final class CastCli implements Runnable {
         @CommandLine.ParentCommand private CastCli parent;
 
         @Parameters(index = "0", arity = "0..1",
-                description = "Target client identifier: claude, codex, cursor, continue, aider, antigravity (or agy).")
+                description = "Target client identifier: claude, codex, cursor, continue, aider, antigravity (or agy), all, all-connected.")
         private String client;
 
         @Option(names = "--list", description = "List all supported client integrations.")
@@ -1532,6 +1562,9 @@ public final class CastCli implements Runnable {
 
         @Option(names = "--check", description = "Verify gateway connectivity without modifying configuration.")
         private boolean check;
+
+        @Option(names = "--refresh", description = "Refresh configuration across all connected agent configurations.")
+        private boolean refresh;
 
         @Option(names = "--dry-run", description = "Show proposed configuration diff without modifying files.")
         private boolean dryRun;
@@ -1552,7 +1585,7 @@ public final class CastCli implements Runnable {
         public Integer call() throws Exception {
             ConnectService service = new ConnectService();
 
-            if (list || (client == null && !check)) {
+            if (list || (client == null && !check && !refresh)) {
                 System.out.println("Supported client integrations for 'cast connect <client>':");
                 for (ClientConnector connector : service.listConnectors()) {
                     Path configPath = connector.resolveConfigPath(Path.of("").toAbsolutePath());
@@ -1571,21 +1604,32 @@ public final class CastCli implements Runnable {
             }
 
             Path workspace = Path.of("").toAbsolutePath();
+            String targetClient = (refresh && client == null) ? "all-connected" : client;
+
             if (disconnect) {
-                ClientConnector.DisconnectResult result = service.disconnectClient(client, workspace, dryRun);
+                List<ClientConnector.DisconnectResult> results = service.disconnectClientOrAll(targetClient, workspace, dryRun);
+                boolean allSuccess = true;
+                for (ClientConnector.DisconnectResult result : results) {
+                    System.out.println(result.message());
+                    if (!result.diff().isEmpty()) {
+                        System.out.println(result.diff());
+                    }
+                    if (!result.success()) allSuccess = false;
+                }
+                return allSuccess ? 0 : 1;
+            }
+
+            boolean effectiveForce = force || refresh;
+            List<ClientConnector.ConnectResult> results = service.connectClientOrAll(targetClient, workspace, gatewayPort, bearerToken, dryRun, effectiveForce);
+            boolean allSuccess = true;
+            for (ClientConnector.ConnectResult result : results) {
                 System.out.println(result.message());
                 if (!result.diff().isEmpty()) {
                     System.out.println(result.diff());
                 }
-                return result.success() ? 0 : 1;
+                if (!result.success()) allSuccess = false;
             }
-
-            ClientConnector.ConnectResult result = service.connectClient(client, workspace, gatewayPort, bearerToken, dryRun, force);
-            System.out.println(result.message());
-            if (!result.diff().isEmpty()) {
-                System.out.println(result.diff());
-            }
-            return result.success() ? 0 : 1;
+            return allSuccess ? 0 : 1;
         }
     }
 

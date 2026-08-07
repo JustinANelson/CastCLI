@@ -91,6 +91,9 @@ Model names are examples, not hard requirements. Any server with an OpenAI-compa
 # Connect CastCLI to external client configuration (claude, codex, cursor, continue, aider, antigravity / agy)
 ./gradlew.bat run --args="connect agy"
 ./gradlew.bat run --args="connect antigravity --dry-run"
+./gradlew.bat run --args="connect all"
+./gradlew.bat run --args="connect --refresh"
+./gradlew.bat run --args="session refresh"
 ./gradlew.bat run --args="connect agy --disconnect"
 
 # Run the bounded OpenAI-compatible gateway; limits have conservative defaults and are independently tunable
