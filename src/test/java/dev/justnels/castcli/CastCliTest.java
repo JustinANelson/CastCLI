@@ -6,6 +6,7 @@ import picocli.CommandLine;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -102,6 +103,19 @@ class CastCliTest {
                 "--config", config.toString(), "feature", "--dry-run", "Add", "task", "filtering");
 
         assertThat(exitCode).isEqualTo(2);
+    }
+
+    @Test
+    void featureFingerprintDetectsRealFilesButIgnoresCastRuntimeArtifacts(@TempDir Path root) throws Exception {
+        byte[] initial = CastCli.Feature.workspaceFingerprint(root, 100_000);
+        Files.createDirectories(root.resolve(".cast/checkpoints"));
+        Files.writeString(root.resolve(".cast/checkpoints/run.json"), "runtime only");
+        byte[] runtimeOnly = CastCli.Feature.workspaceFingerprint(root, 100_000);
+        Files.writeString(root.resolve("index.html"), "<h1>Chat</h1>");
+        byte[] workspaceChanged = CastCli.Feature.workspaceFingerprint(root, 100_000);
+
+        assertThat(Arrays.equals(initial, runtimeOnly)).isTrue();
+        assertThat(Arrays.equals(initial, workspaceChanged)).isFalse();
     }
 
     private static Path writeFeatureConfig(Path root, String tier) throws Exception {

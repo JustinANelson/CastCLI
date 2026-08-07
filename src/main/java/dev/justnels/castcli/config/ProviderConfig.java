@@ -16,7 +16,8 @@ public record ProviderConfig(
         boolean enabled,
         Integer maxToolsSupported,
         double costPerMillionInputTokens,
-        double costPerMillionOutputTokens) {
+        double costPerMillionOutputTokens,
+        Integer maxOutputTokens) {
 
     public ProviderConfig {
         requireText(id, "provider id");
@@ -32,6 +33,26 @@ public record ProviderConfig(
         if (costPerMillionInputTokens < 0 || costPerMillionOutputTokens < 0) {
             throw new IllegalArgumentException("cost per million tokens must not be negative");
         }
+        if (maxOutputTokens != null && maxOutputTokens < 1) {
+            throw new IllegalArgumentException("maxOutputTokens must be positive when configured");
+        }
+    }
+
+    public ProviderConfig(
+            String id,
+            ModelTier tier,
+            String baseUrl,
+            String modelName,
+            String apiKeyEnv,
+            double temperature,
+            int timeoutSeconds,
+            boolean toolsEnabled,
+            boolean enabled,
+            Integer maxToolsSupported,
+            double costPerMillionInputTokens,
+            double costPerMillionOutputTokens) {
+        this(id, tier, baseUrl, modelName, apiKeyEnv, temperature, timeoutSeconds, toolsEnabled, enabled,
+                maxToolsSupported, costPerMillionInputTokens, costPerMillionOutputTokens, null);
     }
 
     public ProviderConfig(
@@ -46,7 +67,7 @@ public record ProviderConfig(
             boolean enabled,
             Integer maxToolsSupported) {
         this(id, tier, baseUrl, modelName, apiKeyEnv, temperature, timeoutSeconds, toolsEnabled, enabled,
-                maxToolsSupported, 0.0, 0.0);
+                maxToolsSupported, 0.0, 0.0, null);
     }
 
     public ProviderConfig(
@@ -75,6 +96,12 @@ public record ProviderConfig(
         return toolsEnabled ? 10 : 0;
     }
 
+    public ProviderConfig withMaxOutputTokens(int limit) {
+        return new ProviderConfig(id, tier, baseUrl, modelName, apiKeyEnv, temperature, timeoutSeconds,
+                toolsEnabled, enabled, maxToolsSupported, costPerMillionInputTokens,
+                costPerMillionOutputTokens, limit);
+    }
+
     public boolean credentialsAvailable() {
         return apiKeyEnv == null || apiKeyEnv.isBlank()
                 || SecretResolver.defaultResolver().resolve(apiKeyEnv).isPresent();
@@ -94,5 +121,4 @@ public record ProviderConfig(
         }
     }
 }
-
 

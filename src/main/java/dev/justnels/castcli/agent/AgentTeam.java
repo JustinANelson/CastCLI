@@ -284,6 +284,11 @@ public final class AgentTeam {
                 .attribute("gen_ai.usage.input_tokens", outcome.inputTokens())
                 .attribute("gen_ai.usage.output_tokens", outcome.outputTokens());
         record(outcome, metrics);
+        if (outcome.answer() == null || outcome.answer().isBlank()) {
+            throw new IllegalStateException("Worker " + subtask.id() + " (" + subtask.assignedRole()
+                    + ") ended without a final answer after tools " + outcome.toolsUsed()
+                    + "; the subtask cannot be marked complete");
+        }
         return subtask.withOutput(outcome.answer(), "COMPLETED");
         }
     }

@@ -25,6 +25,7 @@ class ConnectServiceTest {
         assertTrue(connectors.stream().anyMatch(c -> c.id().equals("codex")));
         assertTrue(connectors.stream().anyMatch(c -> c.id().equals("continue")));
         assertTrue(connectors.stream().anyMatch(c -> c.id().equals("aider")));
+        assertTrue(connectors.stream().anyMatch(c -> c.id().equals("antigravity")));
     }
 
     @Test
@@ -92,6 +93,27 @@ class ConnectServiceTest {
         assertTrue(disconnectResult.success());
         assertTrue(disconnectResult.modified());
         assertFalse(Files.readString(aiderConfig).contains("openai-api-base"));
+    }
+
+    @Test
+    void antigravityConnectorWorkflow(@TempDir Path tempDir) throws IOException {
+        ConnectService service = new ConnectService();
+        Path agyConfig = tempDir.resolve(".agents").resolve("mcp.json");
+
+        // Test connecting with alias 'agy'
+        ClientConnector.ConnectResult result = service.connectClient("agy", tempDir, 8081, null, false, false);
+        assertTrue(result.success());
+        assertTrue(result.modified());
+        assertTrue(Files.isRegularFile(agyConfig));
+        String content = Files.readString(agyConfig);
+        assertTrue(content.contains("cast-cli"));
+        assertTrue(content.contains("mcp-serve"));
+
+        // Test disconnecting with 'antigravity'
+        ClientConnector.DisconnectResult disconnectResult = service.disconnectClient("antigravity", tempDir, false);
+        assertTrue(disconnectResult.success());
+        assertTrue(disconnectResult.modified());
+        assertFalse(Files.readString(agyConfig).contains("cast-cli"));
     }
 
     @Test

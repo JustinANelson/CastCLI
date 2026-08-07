@@ -14,6 +14,7 @@ import java.nio.file.Path;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class AgentTeamTest {
     @TempDir
@@ -67,6 +68,26 @@ class AgentTeamTest {
         assertThat(result.completedTasks().get(0).assignedRole()).isEqualTo(AgentRole.CODER);
         assertThat(result.completedTasks().get(1).assignedRole()).isEqualTo(AgentRole.REVIEWER);
         assertThat(result.commissioningSummary()).contains("Commissioning Approved");
+    }
+
+    @Test
+    void refusesToCompleteWorkerWithNoFinalAnswer() {
+        TestOrchestrator orchestrator = new TestOrchestrator(config) {
+            @Override public Outcome run(TaskRequest task) {
+                if (task.prompt().contains("Break down the following goal")
+                        || task.prompt().contains("Commissioning Agent")) {
+                    return super.run(task);
+                }
+                return new Outcome(FAST_PATH_PROVIDER, null, List.of("WorkspaceTools"),
+                        List.of("writeWorkspaceFile"), 5L, false);
+            }
+        };
+        AgentTeam team = new AgentTeam(config, orchestrator, new CheckpointStore(checkpointDir));
+
+        assertThatThrownBy(() -> team.commission("Create files"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("ended without a final answer")
+                .hasMessageContaining("cannot be marked complete");
     }
 }
 

@@ -40,6 +40,9 @@ pipeline. It refuses to run while any enabled provider has the `FRONTIER_CLOUD` 
 resolved project, config, and prompt without calling a model with `feature --dry-run`; use
 `feature --yes` only in a trusted project to auto-approve file writes and verification commands.
 The active config must enable `tools.allowWrites` and `tools.allowShellExec` for a real run.
+Local models that emit an exact tool-call JSON object as message text are handled through the same
+bounded, approval-gated tool path as native function calls. `feature` returns a failure instead of
+certifying completion when agents only inspect the project and make no workspace change.
 
 > **Cost cap included by default.** Every hardware preset ships with a spend ceiling in its
 > `reliability` block (`maxCostUsdPerTask: 1.0`, `maxCumulativeCostUsd: 20.0`) so an enabled

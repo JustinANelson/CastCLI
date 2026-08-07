@@ -52,9 +52,15 @@ import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.Arrays;
+import java.util.Comparator;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.Callable;
 
 import dev.justnels.castcli.routing.DryRunService;
@@ -999,7 +1005,16 @@ public final class CastCli implements Runnable {
                         + "so workers can edit files and run verification.");
                 return 2;
             }
-            return Commission.execute(config, prompt, null, autoApprove);
+            Path workspace = Path.of(config.tools().workspaceRoot()).toAbsolutePath().normalize();
+            byte[] before = workspaceFingerprint(workspace, config.tools().maxFileBytes());
+            int exitCode = Commission.execute(config, prompt, null, autoApprove);
+            if (exitCode == 0 && Arrays.equals(before,
+                    workspaceFingerprint(workspace, config.tools().maxFileBytes()))) {
+                System.err.println("feature failed: the commissioned agents reported completion but made no "
+                        + "workspace changes. The report must not be treated as a successful implementation.");
+                return 3;
+            }
+            return exitCode;
         }
 
         static String buildPrompt(String featureDescription) {
@@ -1013,6 +1028,43 @@ public final class CastCli implements Runnable {
                     and finish with a concise report of files changed, tests run, and any remaining limitations.
                     Do not use cloud providers.
                     """.formatted(featureDescription).strip();
+        }
+
+        private static final Set<String> FINGERPRINT_EXCLUDED_DIRECTORIES = Set.of(
+                ".cast", ".git", ".gradle", "build", "dist", "node_modules", "out", "target");
+
+        static byte[] workspaceFingerprint(Path workspace, long maxFileBytes) throws IOException {
+            try {
+                MessageDigest digest = MessageDigest.getInstance("SHA-256");
+                if (!Files.isDirectory(workspace)) return digest.digest();
+                try (var paths = Files.walk(workspace)) {
+                    for (Path file : paths.filter(Files::isRegularFile)
+                            .filter(path -> isFingerprintIncluded(workspace, path, maxFileBytes))
+                            .sorted(Comparator.comparing(path -> workspace.relativize(path).toString()))
+                            .toList()) {
+                        digest.update(workspace.relativize(file).toString().getBytes(StandardCharsets.UTF_8));
+                        digest.update((byte) 0);
+                        digest.update(Files.readAllBytes(file));
+                        digest.update((byte) 0);
+                    }
+                }
+                return digest.digest();
+            } catch (NoSuchAlgorithmException impossible) {
+                throw new IllegalStateException("SHA-256 is unavailable", impossible);
+            }
+        }
+
+        private static boolean isFingerprintIncluded(Path workspace, Path file, long maxFileBytes) {
+            Path relative = workspace.relativize(file);
+            if (relative.getNameCount() > 0
+                    && FINGERPRINT_EXCLUDED_DIRECTORIES.contains(relative.getName(0).toString())) {
+                return false;
+            }
+            try {
+                return Files.size(file) <= maxFileBytes;
+            } catch (IOException ignored) {
+                return false;
+            }
         }
     }
 
@@ -1466,13 +1518,13 @@ public final class CastCli implements Runnable {
         }
     }
 
-    @Command(name = "connect", description = "Generate and apply configuration for client tools (claude, codex, cursor, continue, aider).",
+    @Command(name = "connect", description = "Generate and apply configuration for client tools (claude, codex, cursor, continue, aider, antigravity).",
             mixinStandardHelpOptions = true)
     static final class ConnectCmd implements Callable<Integer> {
         @CommandLine.ParentCommand private CastCli parent;
 
         @Parameters(index = "0", arity = "0..1",
-                description = "Target client identifier: claude, codex, cursor, continue, aider.")
+                description = "Target client identifier: claude, codex, cursor, continue, aider, antigravity (or agy).")
         private String client;
 
         @Option(names = "--list", description = "List all supported client integrations.")

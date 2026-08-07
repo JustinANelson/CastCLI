@@ -16,6 +16,7 @@ public class ChatModelFactory {
                 .modelName(provider.modelName())
                 .temperature(provider.temperature())
                 .timeout(Duration.ofSeconds(provider.timeoutSeconds()))
+                .maxTokens(provider.maxOutputTokens())
                 .maxRetries(0)
                 .build();
     }

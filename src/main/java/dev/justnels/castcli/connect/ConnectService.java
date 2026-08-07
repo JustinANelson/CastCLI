@@ -7,7 +7,6 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.file.Path;
 import java.time.Duration;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -26,14 +25,21 @@ public final class ConnectService {
         register(new CursorConnector());
         register(new ContinueConnector());
         register(new AiderConnector());
+        AntigravityConnector agy = new AntigravityConnector();
+        register(agy);
+        registerAlias("agy", agy);
     }
 
     public void register(ClientConnector connector) {
         connectors.put(connector.id().toLowerCase(java.util.Locale.ROOT), connector);
     }
 
+    public void registerAlias(String alias, ClientConnector connector) {
+        connectors.put(alias.toLowerCase(java.util.Locale.ROOT), connector);
+    }
+
     public List<ClientConnector> listConnectors() {
-        return new ArrayList<>(connectors.values());
+        return connectors.values().stream().distinct().collect(java.util.stream.Collectors.toList());
     }
 
     public ClientConnector getConnector(String id) {

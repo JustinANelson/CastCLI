@@ -88,6 +88,11 @@ Model names are examples, not hard requirements. Any server with an OpenAI-compa
 # (point an MCP-capable client such as Claude Code at this as a stdio server)
 ./gradlew.bat run --args="mcp-serve"
 
+# Connect CastCLI to external client configuration (claude, codex, cursor, continue, aider, antigravity / agy)
+./gradlew.bat run --args="connect agy"
+./gradlew.bat run --args="connect antigravity --dry-run"
+./gradlew.bat run --args="connect agy --disconnect"
+
 # Run the bounded OpenAI-compatible gateway; limits have conservative defaults and are independently tunable
 ./gradlew.bat run --args='gateway --port 8081 --max-request-bytes 1048576 --max-concurrent-requests 16'
 ./gradlew.bat run --args='gateway --max-concurrent-streams 8 --queue-wait-ms 2000 --max-messages 256'
@@ -144,6 +149,8 @@ a crashed or interrupted pipeline without re-running completed subtasks.
 prompt. It refuses every config with an enabled `FRONTIER_CLOUD` provider, even for `--dry-run`, and a real
 run requires both write and process-exec tools. Run it from the target project's root so CastCLI anchors
 the generated task and workspace tools to that project.
+Exact standalone text-form tool calls from local models are executed through the normal approval gate.
+A run that changes only `.cast` runtime state fails rather than claiming that a feature was implemented.
 
 Set the variable referenced by a provider's `apiKeyEnv`, then enable that provider in local configuration:
 

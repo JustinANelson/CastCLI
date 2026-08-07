@@ -1,5 +1,7 @@
 package dev.justnels.castcli.orchestration;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.justnels.castcli.config.HarnessConfig;
 import dev.justnels.castcli.config.ModelTier;
 import dev.justnels.castcli.config.ProviderConfig;
@@ -19,7 +21,9 @@ import dev.justnels.castcli.tools.DefaultToolSelector;
 import dev.justnels.castcli.tools.DenyApprovalGate;
 import dev.justnels.castcli.tools.FastPathExecutor;
 import dev.justnels.castcli.tools.MemoryTools;
+import dev.justnels.castcli.tools.ProcessExecTool;
 import dev.justnels.castcli.tools.SemanticSearchTools;
+import dev.justnels.castcli.tools.SystemTools;
 import dev.justnels.castcli.tools.ToolSelector;
 import dev.justnels.castcli.tools.WorkspaceTools;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
@@ -41,6 +45,7 @@ import dev.langchain4j.service.AiServices;
 import dev.langchain4j.service.Result;
 import dev.langchain4j.service.tool.ToolProvider;
 
+import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -52,6 +57,18 @@ import java.util.function.Consumer;
 import io.opentelemetry.api.common.Attributes;
 
 public class HarnessOrchestrator {
+    private static final ObjectMapper TEXT_TOOL_JSON = new ObjectMapper();
+    private static final int MAX_TEXT_TOOL_CALLS = 8;
+    private static final int MAX_TEXT_TOOL_RESULT_CHARS = 4_000;
+    private static final int MAX_INTERNAL_OUTPUT_TOKENS = 768;
+    private static final int MAX_WORKER_OUTPUT_TOKENS = 2_048;
+    private static final String TEXT_TOOL_PROTOCOL = """
+
+            LOCAL TOOL FALLBACK: If you cannot emit native tool calls, return only JSON. For one call use
+            {"name":"toolName","arguments":{...}}. When creating or updating multiple independent files,
+            batch them in one response as {"toolCalls":[{"name":"writeWorkspaceFile","arguments":{...}}, ...]}.
+            Never claim a tool succeeded until CastCLI returns its actual result.
+            """;
     public static final ProviderConfig FAST_PATH_PROVIDER = new ProviderConfig(
             "fast-path", ModelTier.SMALL_LOCAL, "internal", "deterministic-java", null, 0.0, 1, true, true);
 
@@ -591,7 +608,10 @@ public class HarnessOrchestrator {
             }
         }
 
-        ChatModel model = modelFactory.create(provider);
+        int defaultOutputLimit = task.toolsDisabled() ? MAX_INTERNAL_OUTPUT_TOKENS : MAX_WORKER_OUTPUT_TOKENS;
+        int outputLimit = provider.maxOutputTokens() == null
+                ? defaultOutputLimit : Math.min(provider.maxOutputTokens(), defaultOutputLimit);
+        ChatModel model = modelFactory.create(provider.withMaxOutputTokens(outputLimit));
 
         if (!provider.toolsEnabled() || (selectedTools.isEmpty() && mcpToolProvider == null)) {
             List<ChatMessage> messages = withCurrentTurn(history, task.prompt());
@@ -623,19 +643,166 @@ public class HarnessOrchestrator {
         // deliberately different path from the "no tools" branch above where a real message list is
         // used directly.
         String prompt = history.isEmpty() ? task.prompt() : flattenHistoryForPrompt(history) + "\n\n" + task.prompt();
-        Result<String> result = assistant.chat(prompt);
-        List<String> toolsUsed = result.toolExecutions().stream()
+        String toolPrompt = prompt + TEXT_TOOL_PROTOCOL;
+        Result<String> result = assistant.chat(toolPrompt);
+        String currentContent = result.content();
+        TokenUsage currentUsage = result.tokenUsage();
+        boolean hasNativeToolExecutions = !result.toolExecutions().isEmpty();
+        List<String> toolsUsed = new ArrayList<>();
+        toolsUsed.addAll(result.toolExecutions().stream()
                 .map(execution -> execution.request().name())
-                .toList();
+                .toList());
+        long inputTokens = 0;
+        long outputTokens = 0;
+        List<ChatMessage> textToolHistory = new ArrayList<>();
+        textToolHistory.add(UserMessage.from(toolPrompt));
+        int textToolCalls = 0;
+        int nativeContinuationRounds = 0;
+        while (true) {
+            inputTokens += tokensOrZero(currentUsage == null ? null : currentUsage.inputTokenCount());
+            outputTokens += tokensOrZero(currentUsage == null ? null : currentUsage.outputTokenCount());
+
+            List<TextToolCall> textCalls = parseTextToolCalls(currentContent);
+            if (hasNativeToolExecutions) {
+                if (currentContent != null && !currentContent.isBlank()) break;
+                if (nativeContinuationRounds++ >= MAX_TEXT_TOOL_CALLS) {
+                    throw new IllegalStateException("Local model executed tools but produced no final answer after "
+                            + MAX_TEXT_TOOL_CALLS + " continuation rounds");
+                }
+                Result<String> continued = assistant.chat(toolPrompt
+                        + "\n\nCastCLI executed your prior native tool calls: " + toolsUsed + ". "
+                        + "Inspect the current workspace state and continue all missing implementation, test, and "
+                        + "documentation work. Do not repeat completed writes. Return a concise factual summary only "
+                        + "after the entire original task is complete.");
+                currentContent = continued.content();
+                currentUsage = continued.tokenUsage();
+                List<String> continuedTools = continued.toolExecutions().stream()
+                        .map(execution -> execution.request().name())
+                        .toList();
+                toolsUsed.addAll(continuedTools);
+                hasNativeToolExecutions = !continuedTools.isEmpty();
+                continue;
+            }
+            if (textCalls.isEmpty()) {
+                break;
+            }
+            if (textToolCalls + textCalls.size() > MAX_TEXT_TOOL_CALLS) {
+                throw new IllegalStateException("Local model exceeded the text-form tool-call limit of "
+                        + MAX_TEXT_TOOL_CALLS);
+            }
+            textToolCalls += textCalls.size();
+            StringBuilder toolResults = new StringBuilder("CastCLI executed the requested tools:\n");
+            for (TextToolCall call : textCalls) {
+                String toolResult = executeTextToolCall(call, selectedTools);
+                toolsUsed.add(call.name());
+                toolResults.append("\nRESULT for ").append(call.name()).append(":\n")
+                        .append(tail(toolResult, MAX_TEXT_TOOL_RESULT_CHARS)).append('\n');
+            }
+            toolResults.append("\nContinue the original task. Batch independent file writes when possible. "
+                    + "Do not repeat an inspection whose result is already above. When the task is actually complete, "
+                    + "return a concise factual summary.");
+            textToolHistory.add(AiMessage.from(currentContent));
+            textToolHistory.add(UserMessage.from(toolResults.toString()));
+            ChatResponse continuation = model.chat(ChatRequest.builder().messages(textToolHistory).build());
+            currentContent = continuation.aiMessage().text();
+            currentUsage = continuation.metadata() == null ? null : continuation.metadata().tokenUsage();
+            hasNativeToolExecutions = false;
+        }
         long duration = System.currentTimeMillis() - startTime;
-        TokenUsage usage = result.tokenUsage();
-        long inputTokens = tokensOrZero(usage == null ? null : usage.inputTokenCount());
-        long outputTokens = tokensOrZero(usage == null ? null : usage.outputTokenCount());
         double cost = provider.estimatedCostUsd(inputTokens, outputTokens);
         span.attribute("gen_ai.usage.input_tokens", inputTokens)
                 .attribute("gen_ai.usage.output_tokens", outputTokens);
-        return new Outcome(provider, GuardrailFilter.filter(result.content()), selectedToolNames, toolsUsed, duration, false, inputTokens, outputTokens, cost);
+        return new Outcome(provider, GuardrailFilter.filter(currentContent), selectedToolNames, toolsUsed, duration, false, inputTokens, outputTokens, cost);
         }
+    }
+
+    private record TextToolCall(String name, JsonNode arguments) {}
+
+    private static List<TextToolCall> parseTextToolCalls(String content) {
+        if (content == null || content.isBlank()) return List.of();
+        String candidate = content.strip();
+        if (candidate.startsWith("```json") && candidate.endsWith("```")) {
+            candidate = candidate.substring(7, candidate.length() - 3).strip();
+        } else if (candidate.startsWith("```") && candidate.endsWith("```")) {
+            candidate = candidate.substring(3, candidate.length() - 3).strip();
+        }
+        try {
+            JsonNode root = TEXT_TOOL_JSON.readTree(candidate);
+            if (root.isObject() && root.size() == 1 && root.path("toolCalls").isArray()) {
+                List<TextToolCall> calls = new ArrayList<>();
+                for (JsonNode item : root.path("toolCalls")) {
+                    TextToolCall call = parseTextToolCallObject(item);
+                    if (call == null) return List.of();
+                    calls.add(call);
+                }
+                return calls.isEmpty() ? List.of() : List.copyOf(calls);
+            }
+            TextToolCall call = parseTextToolCallObject(root);
+            return call == null ? List.of() : List.of(call);
+        } catch (IOException ignored) {
+            return List.of();
+        }
+    }
+
+    private static TextToolCall parseTextToolCallObject(JsonNode root) {
+        if (!root.isObject() || root.size() != 2 || !root.has("name") || !root.has("arguments")
+                || !root.path("name").isTextual() || !root.path("arguments").isObject()) {
+            return null;
+        }
+        return new TextToolCall(root.path("name").textValue(), root.path("arguments"));
+    }
+
+    private static String executeTextToolCall(TextToolCall call, List<Object> selectedTools) {
+        try {
+            for (Object tool : selectedTools) {
+                if (tool instanceof WorkspaceTools workspace) {
+                    String result = executeWorkspaceTextTool(call, workspace);
+                    if (result != null) return result;
+                } else if (tool instanceof ProcessExecTool process && call.name().equals("runCommand")) {
+                    return process.runCommand(requiredText(call.arguments(), "commandKey"));
+                } else if (tool instanceof SystemTools system && call.name().equals("currentTime")) {
+                    return system.currentTime(requiredText(call.arguments(), "zoneId"));
+                } else if (tool instanceof SemanticSearchTools semantic
+                        && call.name().equals("semanticSearchWorkspace")) {
+                    return semantic.semanticSearchWorkspace(requiredText(call.arguments(), "query"),
+                            optionalInt(call.arguments(), "maxResults", 10)).toString();
+                }
+            }
+            throw new IllegalArgumentException("Text-form tool is not selected or supported: " + call.name());
+        } catch (Exception failure) {
+            return "Tool execution failed: " + failure.getMessage();
+        }
+    }
+
+    private static String executeWorkspaceTextTool(TextToolCall call, WorkspaceTools workspace) throws IOException {
+        return switch (call.name()) {
+            case "readWorkspaceFile" -> workspace.readWorkspaceFile(requiredText(call.arguments(), "path"));
+            case "listWorkspaceFiles" -> workspace.listWorkspaceFiles(
+                    requiredText(call.arguments(), "glob"), optionalInt(call.arguments(), "maxResults", 100)).toString();
+            case "searchWorkspace" -> workspace.searchWorkspace(
+                    requiredText(call.arguments(), "query"), optionalInt(call.arguments(), "maxResults", 100)).toString();
+            case "writeWorkspaceFile" -> workspace.writeWorkspaceFile(
+                    requiredText(call.arguments(), "path"), requiredText(call.arguments(), "content"));
+            default -> null;
+        };
+    }
+
+    private static String requiredText(JsonNode arguments, String name) {
+        JsonNode value = arguments.get(name);
+        if (value == null || !value.isTextual()) {
+            throw new IllegalArgumentException("Missing text argument: " + name);
+        }
+        return value.textValue();
+    }
+
+    private static int optionalInt(JsonNode arguments, String name, int defaultValue) {
+        JsonNode value = arguments.get(name);
+        return value == null ? defaultValue : value.asInt(defaultValue);
+    }
+
+    private static String tail(String text, int maxChars) {
+        return text.length() <= maxChars ? text : "...[earlier tool transcript omitted]\n"
+                + text.substring(text.length() - maxChars);
     }
 
     private static List<ChatMessage> withCurrentTurn(List<ChatMessage> history, String currentPrompt) {
